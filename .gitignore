@@ -1,0 +1,10 @@
+.env
+.pytest_cache/
+__pycache__/
+*.pyc
+.idea/
+.git.invalid-*/
+data/
+ths_board_screen_result.csv
+server_deploy/
+server_deploy.zip

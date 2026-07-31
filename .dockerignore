@@ -1,0 +1,10 @@
+.env
+.git
+.idea
+.pytest_cache
+__pycache__
+*.pyc
+data
+tests
+ths_board_screen_result.csv
+

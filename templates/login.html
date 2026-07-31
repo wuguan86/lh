@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 | 板块等距下跌监测</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
+</head>
+<body class="login-page">
+  <main class="login-shell">
+    <section class="login-brand" aria-labelledby="login-title">
+      <span class="brand-mark" aria-hidden="true">距</span>
+      <div>
+        <p class="eyebrow">A 股板块监测</p>
+        <h1 id="login-title">板块等距下跌监测</h1>
+        <p class="login-summary">筛选结果、目标偏离和板块龙头集中在一个工作台。</p>
+      </div>
+    </section>
+    <section class="login-form-section" aria-label="管理员登录">
+      <form class="login-form" method="post" action="/login">
+        <div class="form-heading">
+          <h2>管理员登录</h2>
+          <p>请输入部署时配置的访问凭据。</p>
+        </div>
+        <label class="field-label" for="username">用户名</label>
+        <input id="username" name="username" autocomplete="username" required autofocus>
+        <label class="field-label" for="password">密码</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+        {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+        <button class="primary-button login-submit" type="submit">登录</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

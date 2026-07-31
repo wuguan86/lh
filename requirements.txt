@@ -1,0 +1,10 @@
+akshare>=1.18.55,<2
+APScheduler>=3.11,<4
+fastapi>=0.135,<1
+itsdangerous>=2.2,<3
+Jinja2>=3.1,<4
+numpy>=2.2,<3
+pandas>=2.2,<4
+python-multipart>=0.0.20,<1
+uvicorn[standard]>=0.41,<1
+

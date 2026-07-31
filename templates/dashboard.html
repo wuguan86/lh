@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <title>板块等距下跌监测</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
+  <script src="{{ url_for('static', path='/app.js') }}" defer></script>
+</head>
+<body class="app-page">
+  <header class="app-header">
+    <div class="app-header__inner">
+      <a class="brand-lockup" href="/" aria-label="返回最新监测结果">
+        <span class="brand-mark" aria-hidden="true">距</span>
+        <span>
+          <strong>板块等距下跌监测</strong>
+          <small>A 股行业与概念板块</small>
+        </span>
+      </a>
+      <button class="icon-button" id="logout-button" type="button" title="退出登录" aria-label="退出登录">
+        <span aria-hidden="true">↗</span>
+      </button>
+    </div>
+  </header>
+
+  <section class="status-band" id="run-status" aria-label="运行状态">
+    <div class="status-band__inner">
+      <div class="status-item status-item--wide">
+        <span>最近状态</span>
+        {% if status_run %}
+          <strong class="status-value status-{{ status_run['status'] }}">{{ status_labels.get(status_run['status'], status_run['status']) }}</strong>
+        {% else %}
+          <strong class="status-value">暂无运行</strong>
+        {% endif %}
+      </div>
+      <div class="status-item">
+        <span>最新交易日</span>
+        <strong>{{ status_run['latest_trade_date'] or '—' if status_run else '—' }}</strong>
+      </div>
+      <div class="status-item">
+        <span>命中板块</span>
+        <strong>{{ status_run['matched_count'] if status_run else 0 }}</strong>
+      </div>
+      <div class="status-item">
+        <span>下次检查</span>
+        <strong>每天 18:00</strong>
+      </div>
+    </div>
+  </section>
+
+  <main class="workspace">
+    <section class="workspace-heading">
+      <div>
+        <p class="eyebrow">筛选结果</p>
+        <h1>{{ selected_run['latest_trade_date'] if selected_run and selected_run['latest_trade_date'] else '等待首次运行' }}</h1>
+      </div>
+      <div class="command-group">
+        {% if selected_run %}
+          <a class="secondary-button" href="/api/runs/{{ selected_run['id'] }}/csv" id="download-csv">
+            <span aria-hidden="true">↓</span> 下载 CSV
+          </a>
+        {% else %}
+          <span class="secondary-button is-disabled" aria-disabled="true"><span aria-hidden="true">↓</span> 下载 CSV</span>
+        {% endif %}
+        <button class="primary-button" id="run-now" type="button" data-active-run-id="{{ active_run_id or '' }}" {% if active_run_id %}disabled{% endif %}>
+          <span aria-hidden="true">▶</span>
+          <span class="run-label">{{ '执行中' if active_run_id else '立即执行' }}</span>
+        </button>
+      </div>
+    </section>
+
+    <section class="toolbar" aria-label="结果筛选">
+      <label class="select-field" for="run-history">
+        <span>历史运行</span>
+        <select id="run-history">
+          {% if not runs %}<option value="">暂无历史</option>{% endif %}
+          {% for run in runs %}
+            <option value="{{ run['id'] }}" {% if selected_run and run['id'] == selected_run['id'] %}selected{% endif %}>
+              {{ run['latest_trade_date'] or run['started_at'][:10] }} · {{ status_labels.get(run['status'], run['status']) }}
+            </option>
+          {% endfor %}
+        </select>
+      </label>
+      <div class="filter-field">
+        <span>板块类型</span>
+        <div class="segmented-control" id="board-type-filter" role="group" aria-label="板块类型">
+          <button type="button" data-board-type="" aria-pressed="true">全部</button>
+          <button type="button" data-board-type="行业" aria-pressed="false">行业</button>
+          <button type="button" data-board-type="概念" aria-pressed="false">概念</button>
+        </div>
+      </div>
+      <label class="search-field" for="board-search">
+        <span>板块名称</span>
+        <input id="board-search" type="search" placeholder="搜索板块" autocomplete="off">
+      </label>
+    </section>
+
+    <section class="results-region" aria-labelledby="results-title">
+      <div class="results-meta">
+        <h2 id="results-title">命中明细</h2>
+        <span id="visible-count">{{ results | length }} 条</span>
+      </div>
+      <div class="table-scroll" tabindex="0">
+        <table class="results-table">
+          <thead>
+            <tr>
+              <th class="sticky-column">板块</th>
+              <th><button class="sort-button" type="button" data-sort-key="currentPrice">当前价格 <span>↕</span></button></th>
+              <th><button class="sort-button" type="button" data-sort-key="targetPrice">目标价格 <span>↕</span></button></th>
+              <th><button class="sort-button" type="button" data-sort-key="targetDeviation">目标偏离率 <span>↕</span></button></th>
+              <th>目标状态</th>
+              <th><button class="sort-button" type="button" data-sort-key="maxDrawdown">最大跌幅 <span>↕</span></button></th>
+              <th>关联 ETF</th>
+              <th>市值龙头 1</th>
+              <th>市值龙头 2</th>
+              <th>市值龙头 3</th>
+            </tr>
+          </thead>
+          <tbody id="results-body">
+          {% for result in results %}
+            <tr class="result-row" tabindex="0"
+                data-board-type="{{ result['板块类型'] }}"
+                data-board-name="{{ result['板块名称'] }}"
+                data-current-price="{{ result.get('当前价格', '') }}"
+                data-target-price="{{ result.get('目标位价格', '') }}"
+                data-target-deviation="{{ result.get('目标偏离率数值', '') if result.get('目标偏离率数值') is not none else '' }}"
+                data-max-drawdown="{{ result.get('最大跌幅数值', '') if result.get('最大跌幅数值') is not none else '' }}"
+                data-details="{{ result | tojson | forceescape }}">
+              <td class="sticky-column board-cell">
+                <strong>{{ result['板块名称'] }}</strong>
+                <span>{{ result['板块类型'] }}</span>
+              </td>
+              <td class="numeric-cell">{{ result.get('当前价格', '—') }}</td>
+              <td class="numeric-cell">{{ result.get('目标位价格', '—') }}</td>
+              <td class="numeric-cell deviation-cell {% if result.get('目标偏离率数值', 0) and result.get('目标偏离率数值', 0) > 0 %}is-broken{% endif %}">
+                {{ result.get('目标偏离率', '—') }}
+              </td>
+              <td>
+                {% if result.get('首次跌破目标日期') %}
+                  <span class="status-tag status-tag--broken">已跌破</span>
+                {% else %}
+                  <span class="status-tag status-tag--near">目标附近</span>
+                {% endif %}
+              </td>
+              <td class="numeric-cell">{{ result.get('最大跌幅') or '未跌破' }}</td>
+              <td class="truncate-cell" title="{{ result.get('关联ETF代码', '') }} {{ result.get('关联ETF名称', '') }}">
+                {% if result.get('关联ETF代码') %}{{ result.get('关联ETF代码') }} {{ result.get('关联ETF名称') }}{% else %}<span class="muted">数据暂缺</span>{% endif %}
+              </td>
+              <td class="truncate-cell" title="{{ result.get('市值龙头1', '') }}">{{ result.get('市值龙头1') or '数据暂缺' }}</td>
+              <td class="truncate-cell" title="{{ result.get('市值龙头2', '') }}">{{ result.get('市值龙头2') or '数据暂缺' }}</td>
+              <td class="truncate-cell" title="{{ result.get('市值龙头3', '') }}">{{ result.get('市值龙头3') or '数据暂缺' }}</td>
+            </tr>
+          {% else %}
+            <tr class="empty-row"><td colspan="10">当前运行没有命中板块</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <dialog class="detail-dialog" id="result-detail">
+    <div class="detail-header">
+      <div>
+        <p class="eyebrow">板块详情</p>
+        <h2 id="detail-title">—</h2>
+      </div>
+      <button class="icon-button" id="detail-close" type="button" aria-label="关闭详情" title="关闭详情">×</button>
+    </div>
+    <div class="detail-content" id="detail-content"></div>
+  </dialog>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
