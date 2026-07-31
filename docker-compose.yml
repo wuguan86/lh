@@ -10,7 +10,7 @@ services:
       OUTPUT_FILE: /app/data/ths_board_screen_result.csv
       ENABLE_SCHEDULER: "true"
     ports:
-      - "127.0.0.1:8000:8000"
+      - "${APP_BIND_HOST:-127.0.0.1}:8000:8000"
     volumes:
       - screening-data:/app/data
     healthcheck:
