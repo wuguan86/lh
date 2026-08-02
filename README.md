@@ -58,6 +58,8 @@ uvicorn board_screening.web:create_default_app --factory --host 127.0.0.1 --port
 python board_pattern_screener.py
 ```
 
+最小上涨幅度通过环境变量 `MIN_WAVE_RISE_PERCENT` 配置，数值按百分数填写，默认值为 `10`。Docker Compose 可直接修改 `.env`；本地命令行可在运行前执行 `$env:MIN_WAVE_RISE_PERCENT = "10"`。最近局部低点对应的上涨幅度不足时，筛选器会继续向左寻找更大级别的局部低点；所有候选波段均不达标时才过滤该板块。
+
 ## 自动任务
 
 - 每天北京时间 18:00 检查新浪交易日历。

@@ -7,6 +7,45 @@ import pytest
 import board_pattern_screener as screener
 
 
+def build_local_low_frame() -> pd.DataFrame:
+    low_values = np.full(40, 100.0)
+    low_values[12] = 80.0
+    low_values[26] = 95.0
+    return pd.DataFrame({"low": low_values})
+
+
+def test_small_wave_falls_back_to_earlier_qualified_local_low() -> None:
+    lookback_df = build_local_low_frame()
+
+    support_position = screener.find_nearest_left_local_low(
+        lookback_df,
+        peak_position=39,
+        peak_price=100.0,
+        min_wave_rise_rate=0.10,
+    )
+
+    assert support_position == 12
+
+
+def test_board_is_filtered_when_no_local_low_reaches_minimum_rise() -> None:
+    lookback_df = build_local_low_frame()
+
+    support_position = screener.find_nearest_left_local_low(
+        lookback_df,
+        peak_position=39,
+        peak_price=100.0,
+        min_wave_rise_rate=0.30,
+    )
+
+    assert support_position is None
+
+
+def test_min_wave_rise_percent_can_be_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MIN_WAVE_RISE_PERCENT", "12.5")
+
+    assert screener.get_min_wave_rise_rate() == pytest.approx(0.125)
+
+
 def test_analyze_accepts_deep_target_break_and_reports_drawdown(monkeypatch: pytest.MonkeyPatch) -> None:
     dates = pd.date_range("2026-01-01", periods=90, freq="D")
     close_values = np.linspace(180.0, 50.0, 90)
@@ -38,6 +77,7 @@ def test_analyze_accepts_deep_target_break_and_reports_drawdown(monkeypatch: pyt
     assert result is not None
     assert result["目标位价格"] == 100.0
     assert result["目标偏离率"] == "50.00%"
+    assert result["上涨幅度"] == "33.33%"
     assert result["首次跌破目标日期"] == dates[70].strftime("%Y-%m-%d")
     assert result["跌破目标后最低价"] == 40.0
     assert result["最低价日期"] == dates[75].strftime("%Y-%m-%d")

@@ -8,6 +8,8 @@ A 股同花顺板块等距下跌形态筛选程序。
 from __future__ import annotations
 
 import logging
+import math
+import os
 import time
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -38,6 +40,7 @@ FETCH_CALENDAR_DAYS = 220
 RETRY_TIMES = 3
 REQUEST_SLEEP_SECONDS = 0.8
 OUTPUT_FILE = "ths_board_screen_result.csv"
+DEFAULT_MIN_WAVE_RISE_PERCENT = 10.0
 
 BOARD_TYPE_INDUSTRY = "行业"
 BOARD_TYPE_CONCEPT = "概念"
@@ -185,8 +188,10 @@ def normalize_kline(raw_df: pd.DataFrame) -> pd.DataFrame:
 def find_nearest_left_local_low(
     lookback_df: pd.DataFrame,
     peak_position: int,
+    peak_price: float | None = None,
+    min_wave_rise_rate: float = 0,
 ) -> int | None:
-    """从最高点向左寻找最近波谷，波谷需严格低于前后各 5 天最低价。"""
+    """从最高点向左寻找最近的合格波谷，小波段不合格时继续寻找更大波段。"""
     last_valid_position = len(lookback_df) - SWING_WINDOW - 1
     start_position = min(peak_position - 1, last_valid_position)
 
@@ -200,9 +205,25 @@ def find_nearest_left_local_low(
         next_min = np.nanmin(low_values[position + 1 : position + SWING_WINDOW + 1])
 
         if current_low < previous_min and current_low < next_min:
-            return position
+            if peak_price is None:
+                return position
+            wave_rise_rate = (peak_price - current_low) / current_low if current_low > 0 else -1
+            if wave_rise_rate >= min_wave_rise_rate:
+                return position
 
     return None
+
+
+def get_min_wave_rise_rate() -> float:
+    """读取最小上涨幅度百分比，默认 10，允许用环境变量调整。"""
+    raw_value = os.getenv("MIN_WAVE_RISE_PERCENT", str(DEFAULT_MIN_WAVE_RISE_PERCENT))
+    try:
+        percent = float(raw_value)
+    except ValueError as exc:
+        raise ValueError("MIN_WAVE_RISE_PERCENT 必须是非负数字") from exc
+    if not math.isfinite(percent) or percent < 0:
+        raise ValueError("MIN_WAVE_RISE_PERCENT 必须是非负数字")
+    return percent / 100
 
 
 def find_first_break_support_position(
@@ -251,8 +272,14 @@ def calculate_latest_bias(kline_df: pd.DataFrame) -> float | None:
     return (moving_average - latest_close) / moving_average
 
 
-def analyze_board_pattern(board: BoardInfo, kline_df: pd.DataFrame) -> dict[str, object] | None:
+def analyze_board_pattern(
+    board: BoardInfo,
+    kline_df: pd.DataFrame,
+    min_wave_rise_rate: float = DEFAULT_MIN_WAVE_RISE_PERCENT / 100,
+) -> dict[str, object] | None:
     """计算等距下跌形态，满足跌破支撑、下跌流畅和乖离率条件时返回结果记录。"""
+    if not math.isfinite(min_wave_rise_rate) or min_wave_rise_rate < 0:
+        raise ValueError("最小上涨幅度必须是非负数")
     if len(kline_df) < LOOKBACK_TRADING_DAYS:
         logging.info(
             "【%s-%s】数据不足 %s 个交易日，当前仅 %s 条，已跳过。",
@@ -277,17 +304,24 @@ def analyze_board_pattern(board: BoardInfo, kline_df: pd.DataFrame) -> dict[str,
         )
         return None
 
-    support_position = find_nearest_left_local_low(lookback_df, peak_position)
+    support_position = find_nearest_left_local_low(
+        lookback_df,
+        peak_position,
+        peak_price,
+        min_wave_rise_rate,
+    )
     if support_position is None:
         logging.info(
-            "【%s-%s】最高点左侧未找到符合定义的局部低点，已跳过。",
+            "【%s-%s】最高点左侧未找到上涨幅度达到 %.2f%% 的局部低点，已跳过。",
             board.board_type,
             board.board_name,
+            min_wave_rise_rate * 100,
         )
         return None
 
     support_level = float(lookback_df.loc[support_position, "low"])
     wave_height = peak_price - support_level
+    wave_rise_rate = wave_height / support_level
     target_price = support_level - wave_height
     latest_row = lookback_df.iloc[-1]
     latest_close = float(latest_row["close"])
@@ -338,6 +372,7 @@ def analyze_board_pattern(board: BoardInfo, kline_df: pd.DataFrame) -> dict[str,
         "目标偏离率": f"{target_deviation:.2%}",
         "支撑位": round(support_level, 3),
         "最高点价格": round(peak_price, 3),
+        "上涨幅度": f"{wave_rise_rate:.2%}",
         "首次跌破目标日期": (
             target_drawdown.break_date.strftime("%Y-%m-%d") if target_drawdown else ""
         ),
@@ -367,8 +402,16 @@ def save_results(result_df: pd.DataFrame) -> None:
     logging.info("筛选结果已保存到：%s", OUTPUT_FILE)
 
 
-def run_screening(enricher: DataEnricher | None = None) -> ScreeningOutput:
+def run_screening(
+    enricher: DataEnricher | None = None,
+    min_wave_rise_rate: float | None = None,
+) -> ScreeningOutput:
     """执行完整筛选并仅为命中板块补充 ETF 和市值龙头。"""
+    configured_min_wave_rise_rate = (
+        get_min_wave_rise_rate() if min_wave_rise_rate is None else min_wave_rise_rate
+    )
+    if not math.isfinite(configured_min_wave_rise_rate) or configured_min_wave_rise_rate < 0:
+        raise ValueError("最小上涨幅度必须是非负数")
     start_date, end_date = get_date_range()
     warning_messages: list[str] = []
     boards = get_all_boards(warning_messages)
@@ -377,7 +420,8 @@ def run_screening(enricher: DataEnricher | None = None) -> ScreeningOutput:
 
     print(
         f"开始筛选同花顺行业 + 概念板块，共 {len(boards)} 个；"
-        f"请求区间：{start_date} 至 {end_date}。"
+        f"请求区间：{start_date} 至 {end_date}；"
+        f"最小上涨幅度：{configured_min_wave_rise_rate:.2%}。"
     )
 
     matched_records: list[dict[str, object]] = []
@@ -397,7 +441,11 @@ def run_screening(enricher: DataEnricher | None = None) -> ScreeningOutput:
             if not kline_df.empty:
                 latest_trade_dates.append(kline_df.iloc[-1]["date"].strftime("%Y-%m-%d"))
                 processed_board_count += 1
-            matched_record = analyze_board_pattern(board, kline_df)
+            matched_record = analyze_board_pattern(
+                board,
+                kline_df,
+                configured_min_wave_rise_rate,
+            )
         except Exception as exc:
             logging.exception("分析【%s-%s】失败，原因：%s", board.board_type, board.board_name, exc)
             warning_messages.append(f"【{board.board_type}-{board.board_name}】分析失败：{exc}")
