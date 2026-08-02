@@ -7,6 +7,7 @@ import pytest
 from board_screening.jobs import RunAlreadyActive, RunCoordinator, ScheduledRunService
 from board_screening.models import ScreeningOutput
 from board_screening.storage import RunRepository
+from board_screening.strategies import STRATEGY_MACD_DIVERGENCE
 
 
 def test_coordinator_persists_success_and_writes_latest_csv(tmp_path) -> None:
@@ -20,7 +21,9 @@ def test_coordinator_persists_success_and_writes_latest_csv(tmp_path) -> None:
                 "板块名称": "5G",
                 "最新交易日": "2026-07-24",
                 "当前价格": 95.0,
-                "目标位价格": 100.0,
+                "1:1等距目标价": 100.0,
+                "1.272扩展目标价": 86.4,
+                "1.618扩展目标价": 69.1,
                 "目标偏离率": "5.00%",
             },
         ),
@@ -192,4 +195,41 @@ def test_idle_callback_waits_during_atomic_submission(tmp_path) -> None:
     submit_thread.join(timeout=2)
     coordinator.wait_for_idle(timeout=2)
     assert callback_called.is_set()
+    coordinator.shutdown()
+
+
+def test_scheduled_service_runs_both_strategies_in_sequence(tmp_path) -> None:
+    repository = RunRepository(tmp_path / "screening.db")
+    repository.initialize()
+    executions: list[str] = []
+
+    def output_for(strategy: str):
+        def execute() -> ScreeningOutput:
+            executions.append(strategy)
+            return ScreeningOutput(records=(), warnings=(), latest_trade_date="2026-07-24")
+
+        return execute
+
+    coordinator = RunCoordinator(
+        repository,
+        output_for("equal_decline"),
+        lambda _: None,
+        strategy_screeners={
+            "equal_decline": output_for("equal_decline"),
+            STRATEGY_MACD_DIVERGENCE: output_for(STRATEGY_MACD_DIVERGENCE),
+        },
+    )
+    service = ScheduledRunService(
+        repository,
+        coordinator,
+        lambda: "2026-07-24",
+        strategies=("equal_decline", STRATEGY_MACD_DIVERGENCE),
+    )
+
+    first_run_id = service.check_and_submit()
+    coordinator.wait_for_idle(timeout=3)
+
+    assert first_run_id is not None
+    assert executions == ["equal_decline", STRATEGY_MACD_DIVERGENCE]
+    assert len(repository.get_runs()) == 2
     coordinator.shutdown()

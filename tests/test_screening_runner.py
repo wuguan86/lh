@@ -29,7 +29,9 @@ def test_run_screening_returns_enriched_records_and_latest_trade_date(monkeypatc
         "板块名称": "5G",
         "最新交易日": "2026-07-24",
         "当前价格": 94.0,
-        "目标位价格": 100.0,
+        "1:1等距目标价": 100.0,
+        "1.272扩展目标价": 86.4,
+        "1.618扩展目标价": 69.1,
         "目标偏离率": "6.00%",
     }
     monkeypatch.setattr(screener, "get_all_boards", lambda *_: [board])

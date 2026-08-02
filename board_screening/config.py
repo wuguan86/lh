@@ -21,6 +21,7 @@ class Settings:
     session_secret: str
     database_path: Path
     output_file: Path
+    divergence_output_file: Path | None = None
     cookie_secure: bool = False
     enable_scheduler: bool = True
 
@@ -38,6 +39,12 @@ class Settings:
             session_secret=session_secret,
             database_path=Path(os.getenv("DATABASE_PATH", "data/screening.db")),
             output_file=Path(os.getenv("OUTPUT_FILE", "data/ths_board_screen_result.csv")),
+            divergence_output_file=Path(
+                os.getenv(
+                    "DIVERGENCE_OUTPUT_FILE",
+                    "data/ths_board_macd_divergence_result.csv",
+                )
+            ),
             cookie_secure=_env_bool("COOKIE_SECURE", False),
             enable_scheduler=_env_bool("ENABLE_SCHEDULER", True),
         )

@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Form, HTTPException, Query, Request, status
+from fastapi import Body, FastAPI, Form, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -17,6 +17,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from board_screening.auth import LoginRateLimiter
 from board_screening.config import Settings
+from board_screening.divergence_screening import run_divergence_screening
 from board_screening.export import records_to_csv_bytes, write_latest_csv
 from board_screening.jobs import RunAlreadyActive, RunCoordinator, ScheduledRunService
 from board_screening.scheduler import (
@@ -25,6 +26,14 @@ from board_screening.scheduler import (
     submit_startup_catchup,
 )
 from board_screening.storage import RunRepository
+from board_screening.market_data import CachedKlineProvider, KlineCache
+from board_screening.strategies import (
+    STRATEGY_EQUAL_DECLINE,
+    STRATEGY_LABELS,
+    STRATEGY_MACD_DIVERGENCE,
+    SUPPORTED_STRATEGIES,
+    validate_strategy,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -40,15 +49,50 @@ RUN_STATUS_LABELS = {
 
 
 def _create_default_coordinator(settings: Settings, repository: RunRepository) -> RunCoordinator:
-    def execute_screening():
+    cache = KlineCache(settings.database_path)
+    cache.initialize()
+    kline_provider = CachedKlineProvider(cache)
+
+    def execute_equal_decline():
         from board_pattern_screener import run_screening
 
-        return run_screening()
+        latest_trade_date = fetch_latest_trade_date()
+        return run_screening(
+            kline_provider=kline_provider,
+            required_trade_date=latest_trade_date,
+        )
+
+    def execute_macd_divergence():
+        return run_divergence_screening(kline_provider)
+
+    divergence_output_file = settings.divergence_output_file or settings.output_file.with_name(
+        "ths_board_macd_divergence_result.csv"
+    )
 
     return RunCoordinator(
         repository,
-        execute_screening,
-        lambda records: write_latest_csv(records, settings.output_file),
+        execute_equal_decline,
+        lambda records: write_latest_csv(
+            records,
+            settings.output_file,
+            STRATEGY_EQUAL_DECLINE,
+        ),
+        strategy_screeners={
+            STRATEGY_EQUAL_DECLINE: execute_equal_decline,
+            STRATEGY_MACD_DIVERGENCE: execute_macd_divergence,
+        },
+        strategy_csv_writers={
+            STRATEGY_EQUAL_DECLINE: lambda records: write_latest_csv(
+                records,
+                settings.output_file,
+                STRATEGY_EQUAL_DECLINE,
+            ),
+            STRATEGY_MACD_DIVERGENCE: lambda records: write_latest_csv(
+                records,
+                divergence_output_file,
+                STRATEGY_MACD_DIVERGENCE,
+            ),
+        },
     )
 
 
@@ -79,6 +123,7 @@ def create_app(
     app_settings = settings or Settings.from_env()
     app_repository = repository or RunRepository(app_settings.database_path)
     app_repository.initialize()
+    KlineCache(app_settings.database_path).initialize()
     app_coordinator = coordinator or _create_default_coordinator(app_settings, app_repository)
     login_limiter = LoginRateLimiter()
     scheduler = None
@@ -91,6 +136,7 @@ def create_app(
                 app_repository,
                 app_coordinator,
                 fetch_latest_trade_date,
+                strategies=SUPPORTED_STRATEGIES,
             )
             scheduler = build_scheduler(scheduled_service)
             scheduler.start()
@@ -105,7 +151,7 @@ def create_app(
             scheduler.shutdown(wait=False)
         app_coordinator.shutdown()
 
-    app = FastAPI(title="板块等距下跌监测", lifespan=lifespan)
+    app = FastAPI(title="板块形态监测", lifespan=lifespan)
     app.add_middleware(
         SessionMiddleware,
         secret_key=app_settings.session_secret,
@@ -169,18 +215,32 @@ def create_app(
         return RedirectResponse("/login", status_code=303)
 
     @app.get("/", response_class=HTMLResponse)
-    def dashboard(request: Request, run_id: int | None = None) -> Response:
+    def dashboard(
+        request: Request,
+        run_id: int | None = None,
+        strategy: str = STRATEGY_EQUAL_DECLINE,
+    ) -> Response:
         redirect = _require_authenticated(request)
         if redirect:
             return redirect
-        latest_run = app_repository.get_current_run()
+        try:
+            selected_strategy = validate_strategy(strategy)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        latest_run = app_repository.get_current_run(selected_strategy)
         if run_id:
             selected_run = app_repository.get_run(run_id)
+            if selected_run is None:
+                raise HTTPException(status_code=404, detail="运行记录不存在")
+            selected_strategy = str(selected_run["strategy"])
+            latest_run = app_repository.get_current_run(selected_strategy)
             status_run = selected_run
         else:
             status_run = latest_run
             if latest_run and latest_run["status"] not in {"succeeded", "succeeded_with_warnings"}:
-                selected_run = app_repository.get_latest_successful_run() or latest_run
+                selected_run = (
+                    app_repository.get_latest_successful_run(selected_strategy) or latest_run
+                )
             else:
                 selected_run = latest_run
         results = app_repository.get_results(int(selected_run["id"])) if selected_run else []
@@ -188,35 +248,55 @@ def create_app(
             request,
             "dashboard.html",
             {
-                "runs": app_repository.get_runs(),
+                "runs": app_repository.get_runs(strategy=selected_strategy),
                 "selected_run": selected_run,
                 "status_run": status_run,
                 "results": results,
                 "active_run_id": app_coordinator.active_run_id,
+                "active_strategy": getattr(app_coordinator, "active_strategy", None),
+                "selected_strategy": selected_strategy,
+                "strategy_labels": STRATEGY_LABELS,
                 "csrf_token": request.session["csrf_token"],
                 "status_labels": RUN_STATUS_LABELS,
             },
         )
 
     @app.post("/api/runs", status_code=status.HTTP_202_ACCEPTED)
-    def start_run(request: Request) -> dict[str, object]:
+    def start_run(
+        request: Request,
+        payload: dict[str, str] | None = Body(default=None),
+    ) -> dict[str, object]:
         _require_authenticated(request, api=True)
         _validate_csrf(request)
+        strategy = (payload or {}).get("strategy", STRATEGY_EQUAL_DECLINE)
         try:
-            run_id = app_coordinator.submit("manual")
+            validate_strategy(strategy)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            if strategy == STRATEGY_EQUAL_DECLINE:
+                run_id = app_coordinator.submit("manual")
+            else:
+                run_id = app_coordinator.submit("manual", strategy)
         except RunAlreadyActive as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"run_id": run_id, "status": "queued"}
 
     @app.get("/api/runs/current")
-    def current_run(request: Request) -> dict[str, object] | None:
+    def current_run(
+        request: Request,
+        strategy: str | None = Query(default=None),
+    ) -> dict[str, object] | None:
         _require_authenticated(request, api=True)
-        return app_repository.get_current_run()
+        return app_repository.get_current_run(strategy)
 
     @app.get("/api/runs")
-    def list_runs(request: Request) -> list[dict[str, object]]:
+    def list_runs(
+        request: Request,
+        strategy: str | None = Query(default=None),
+    ) -> list[dict[str, object]]:
         _require_authenticated(request, api=True)
-        return app_repository.get_runs()
+        return app_repository.get_runs(strategy=strategy)
 
     @app.get("/api/runs/{run_id}")
     def run_detail(request: Request, run_id: int) -> dict[str, object]:
@@ -232,6 +312,8 @@ def create_app(
         run_id: int,
         board_type: str | None = Query(default=None),
         search: str | None = Query(default=None),
+        timeframe: str | None = Query(default=None),
+        category: str | None = Query(default=None),
     ) -> list[dict[str, object]]:
         _require_authenticated(request, api=True)
         if app_repository.get_run(run_id) is None:
@@ -241,6 +323,10 @@ def create_app(
             records = [record for record in records if record.get("板块类型") == board_type]
         if search:
             records = [record for record in records if search.lower() in str(record.get("板块名称", "")).lower()]
+        if timeframe:
+            records = [record for record in records if record.get("周期") == timeframe]
+        if category:
+            records = [record for record in records if category in str(record.get("背离分类", ""))]
         return records
 
     @app.get("/api/runs/{run_id}/csv")
@@ -248,11 +334,17 @@ def create_app(
         _require_authenticated(request, api=True)
         if app_repository.get_run(run_id) is None:
             raise HTTPException(status_code=404, detail="运行记录不存在")
-        content = records_to_csv_bytes(app_repository.get_results(run_id))
+        run = app_repository.get_run(run_id)
+        strategy = str(run["strategy"])
+        content = records_to_csv_bytes(app_repository.get_results(run_id), strategy)
         return Response(
             content=content,
             media_type="text/csv; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="board-screening-{run_id}.csv"'},
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="board-screening-{strategy}-{run_id}.csv"'
+                )
+            },
         )
 
     return app

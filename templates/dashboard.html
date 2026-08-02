@@ -4,17 +4,17 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf-token" content="{{ csrf_token }}">
-  <title>板块等距下跌监测</title>
+  <title>板块形态监测</title>
   <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
   <script src="{{ url_for('static', path='/app.js') }}" defer></script>
 </head>
-<body class="app-page">
+<body class="app-page" data-strategy="{{ selected_strategy }}">
   <header class="app-header">
     <div class="app-header__inner">
-      <a class="brand-lockup" href="/" aria-label="返回最新监测结果">
-        <span class="brand-mark" aria-hidden="true">距</span>
+      <a class="brand-lockup" href="/?strategy={{ selected_strategy }}" aria-label="返回最新监测结果">
+        <span class="brand-mark" aria-hidden="true">形</span>
         <span>
-          <strong>板块等距下跌监测</strong>
+          <strong>板块形态监测</strong>
           <small>A 股行业与概念板块</small>
         </span>
       </a>
@@ -50,9 +50,16 @@
   </section>
 
   <main class="workspace">
+    <nav class="strategy-switcher" aria-label="筛选策略">
+      {% for strategy_key, strategy_label in strategy_labels.items() %}
+        <a href="/?strategy={{ strategy_key }}" {% if strategy_key == selected_strategy %}aria-current="page"{% endif %}>
+          {{ strategy_label }}
+        </a>
+      {% endfor %}
+    </nav>
     <section class="workspace-heading">
       <div>
-        <p class="eyebrow">筛选结果</p>
+        <p class="eyebrow">{{ strategy_labels[selected_strategy] }}筛选结果</p>
         <h1>{{ selected_run['latest_trade_date'] if selected_run and selected_run['latest_trade_date'] else '等待首次运行' }}</h1>
       </div>
       <div class="command-group">
@@ -63,14 +70,16 @@
         {% else %}
           <span class="secondary-button is-disabled" aria-disabled="true"><span aria-hidden="true">↓</span> 下载 CSV</span>
         {% endif %}
-        <button class="primary-button" id="run-now" type="button" data-active-run-id="{{ active_run_id or '' }}" {% if active_run_id %}disabled{% endif %}>
+        <button class="primary-button" id="run-now" type="button"
+                data-strategy="{{ selected_strategy }}"
+                data-active-run-id="{{ active_run_id or '' }}" {% if active_run_id %}disabled{% endif %}>
           <span aria-hidden="true">▶</span>
           <span class="run-label">{{ '执行中' if active_run_id else '立即执行' }}</span>
         </button>
       </div>
     </section>
 
-    <section class="toolbar" aria-label="结果筛选">
+    <section class="toolbar {% if selected_strategy == 'macd_bottom_divergence' %}toolbar--divergence{% endif %}" aria-label="结果筛选">
       <label class="select-field" for="run-history">
         <span>历史运行</span>
         <select id="run-history">
@@ -90,6 +99,27 @@
           <button type="button" data-board-type="概念" aria-pressed="false">概念</button>
         </div>
       </div>
+      {% if selected_strategy == 'macd_bottom_divergence' %}
+      <div class="filter-field">
+        <span>周期</span>
+        <div class="segmented-control" id="timeframe-filter" role="group" aria-label="周期">
+          <button type="button" data-timeframe="" aria-pressed="true">全部</button>
+          <button type="button" data-timeframe="日线" aria-pressed="false">日</button>
+          <button type="button" data-timeframe="周线" aria-pressed="false">周</button>
+          <button type="button" data-timeframe="月线" aria-pressed="false">月</button>
+        </div>
+      </div>
+      <label class="select-field" for="category-filter">
+        <span>背离分类</span>
+        <select id="category-filter">
+          <option value="">全部分类</option>
+          <option value="单纯底背离">单纯底背离</option>
+          <option value="线和绿柱双背离">线和绿柱双背离</option>
+          <option value="背离+红柱">背离+红柱</option>
+          <option value="多次背离">多次背离</option>
+        </select>
+      </label>
+      {% endif %}
       <label class="search-field" for="board-search">
         <span>板块名称</span>
         <input id="board-search" type="search" placeholder="搜索板块" autocomplete="off">
@@ -102,19 +132,25 @@
         <span id="visible-count">{{ results | length }} 条</span>
       </div>
       <div class="table-scroll" tabindex="0">
+        {% if selected_strategy == 'equal_decline' %}
         <table class="results-table">
           <thead>
             <tr>
               <th class="sticky-column">板块</th>
+              <th>最新交易日</th>
               <th><button class="sort-button" type="button" data-sort-key="currentPrice">当前价格 <span>↕</span></button></th>
-              <th><button class="sort-button" type="button" data-sort-key="targetPrice">目标价格 <span>↕</span></button></th>
-              <th><button class="sort-button" type="button" data-sort-key="targetDeviation">目标偏离率 <span>↕</span></button></th>
-              <th>目标状态</th>
-              <th><button class="sort-button" type="button" data-sort-key="maxDrawdown">最大跌幅 <span>↕</span></button></th>
+              <th><button class="sort-button" type="button" data-sort-key="targetPrice">1:1 等距 <span>↕</span></button></th>
+              <th><button class="sort-button" type="button" data-sort-key="extension1272">1.272 扩展 <span>↕</span></button></th>
+              <th><button class="sort-button" type="button" data-sort-key="extension1618">1.618 扩展 <span>↕</span></button></th>
+              <th><button class="sort-button" type="button" data-sort-key="targetDeviation">1:1 目标偏离率 <span>↕</span></button></th>
+              <th>1:1 状态</th>
+              <th><button class="sort-button" type="button" data-sort-key="supportPrice">支撑位 <span>↕</span></button></th>
+              <th><button class="sort-button" type="button" data-sort-key="peakPrice">最高点 <span>↕</span></button></th>
+              <th><button class="sort-button" type="button" data-sort-key="waveRise">上涨幅度 <span>↕</span></button></th>
+              <th><button class="sort-button" type="button" data-sort-key="maxDrawdown">1:1 后最大跌幅 <span>↕</span></button></th>
+              <th><button class="sort-button" type="button" data-sort-key="downRatio">下跌占比 <span>↕</span></button></th>
+              <th><button class="sort-button" type="button" data-sort-key="latestBias">20 日乖离率 <span>↕</span></button></th>
               <th>关联 ETF</th>
-              <th>市值龙头 1</th>
-              <th>市值龙头 2</th>
-              <th>市值龙头 3</th>
             </tr>
           </thead>
           <tbody id="results-body">
@@ -123,16 +159,26 @@
                 data-board-type="{{ result['板块类型'] }}"
                 data-board-name="{{ result['板块名称'] }}"
                 data-current-price="{{ result.get('当前价格', '') }}"
-                data-target-price="{{ result.get('目标位价格', '') }}"
+                data-target-price="{{ result.get('1:1等距目标价', result.get('目标位价格', '')) }}"
+                data-extension1272="{{ result.get('1.272扩展目标价', '') }}"
+                data-extension1618="{{ result.get('1.618扩展目标价', '') }}"
                 data-target-deviation="{{ result.get('目标偏离率数值', '') if result.get('目标偏离率数值') is not none else '' }}"
+                data-support-price="{{ result.get('支撑位', '') }}"
+                data-peak-price="{{ result.get('最高点价格', '') }}"
+                data-wave-rise="{{ result.get('上涨幅度', '') }}"
                 data-max-drawdown="{{ result.get('最大跌幅数值', '') if result.get('最大跌幅数值') is not none else '' }}"
+                data-down-ratio="{{ result.get('下跌天数占比', '') }}"
+                data-latest-bias="{{ result.get('20日乖离率', '') }}"
                 data-details="{{ result | tojson | forceescape }}">
               <td class="sticky-column board-cell">
                 <strong>{{ result['板块名称'] }}</strong>
                 <span>{{ result['板块类型'] }}</span>
               </td>
+              <td class="numeric-cell">{{ result.get('最新交易日', '—') }}</td>
               <td class="numeric-cell">{{ result.get('当前价格', '—') }}</td>
-              <td class="numeric-cell">{{ result.get('目标位价格', '—') }}</td>
+              <td class="numeric-cell">{{ result.get('1:1等距目标价', result.get('目标位价格', '—')) }}</td>
+              <td class="numeric-cell">{{ result.get('1.272扩展目标价') or '—' }}</td>
+              <td class="numeric-cell">{{ result.get('1.618扩展目标价') or '—' }}</td>
               <td class="numeric-cell deviation-cell {% if result.get('目标偏离率数值', 0) and result.get('目标偏离率数值', 0) > 0 %}is-broken{% endif %}">
                 {{ result.get('目标偏离率', '—') }}
               </td>
@@ -143,19 +189,79 @@
                   <span class="status-tag status-tag--near">目标附近</span>
                 {% endif %}
               </td>
+              <td class="numeric-cell">{{ result.get('支撑位', '—') }}</td>
+              <td class="numeric-cell">{{ result.get('最高点价格', '—') }}</td>
+              <td class="numeric-cell">{{ result.get('上涨幅度', '—') }}</td>
               <td class="numeric-cell">{{ result.get('最大跌幅') or '未跌破' }}</td>
+              <td class="numeric-cell">{{ result.get('下跌天数占比', '—') }}</td>
+              <td class="numeric-cell">{{ result.get('20日乖离率', '—') }}</td>
               <td class="truncate-cell" title="{{ result.get('关联ETF代码', '') }} {{ result.get('关联ETF名称', '') }}">
                 {% if result.get('关联ETF代码') %}{{ result.get('关联ETF代码') }} {{ result.get('关联ETF名称') }}{% else %}<span class="muted">数据暂缺</span>{% endif %}
               </td>
-              <td class="truncate-cell" title="{{ result.get('市值龙头1', '') }}">{{ result.get('市值龙头1') or '数据暂缺' }}</td>
-              <td class="truncate-cell" title="{{ result.get('市值龙头2', '') }}">{{ result.get('市值龙头2') or '数据暂缺' }}</td>
-              <td class="truncate-cell" title="{{ result.get('市值龙头3', '') }}">{{ result.get('市值龙头3') or '数据暂缺' }}</td>
             </tr>
           {% else %}
-            <tr class="empty-row"><td colspan="10">当前运行没有命中板块</td></tr>
+            <tr class="empty-row"><td colspan="15">当前运行没有命中板块</td></tr>
           {% endfor %}
           </tbody>
         </table>
+        {% else %}
+        <table class="results-table divergence-table">
+          <thead>
+            <tr>
+              <th class="sticky-column">板块</th>
+              <th>周期</th>
+              <th>背离分类</th>
+              <th>第二低点</th>
+              <th><button class="sort-button" type="button" data-sort-key="currentPrice">当前价格 <span>↕</span></button></th>
+              <th>价格低点</th>
+              <th><button class="sort-button" type="button" data-sort-key="priceDrop">创新低 <span>↕</span></button></th>
+              <th>DIF 低点</th>
+              <th><button class="sort-button" type="button" data-sort-key="difLift">DIF 抬高 <span>↕</span></button></th>
+              <th><button class="sort-button" type="button" data-sort-key="rebound">价格反弹 <span>↕</span></button></th>
+              <th>当前柱</th>
+              <th>关联 ETF</th>
+            </tr>
+          </thead>
+          <tbody id="results-body">
+          {% for result in results %}
+            <tr class="result-row" tabindex="0"
+                data-board-type="{{ result['板块类型'] }}"
+                data-board-name="{{ result['板块名称'] }}"
+                data-timeframe="{{ result.get('周期', '') }}"
+                data-category="{{ result.get('背离分类', '') }}"
+                data-current-price="{{ result.get('当前价格', '') }}"
+                data-price-drop="{{ result.get('价格创新低幅度', '') }}"
+                data-dif-lift="{{ result.get('DIF抬高幅度', '') }}"
+                data-rebound="{{ result.get('价格反弹幅度', '') }}"
+                data-details="{{ result | tojson | forceescape }}">
+              <td class="sticky-column board-cell">
+                <strong>{{ result['板块名称'] }}</strong>
+                <span>{{ result['板块类型'] }}</span>
+              </td>
+              <td><span class="timeframe-tag">{{ result.get('周期', '—') }}</span></td>
+              <td class="category-cell">
+                {% for label in result.get('背离分类', '').split('、') %}
+                  <span class="divergence-tag">{{ label }}</span>
+                {% endfor %}
+              </td>
+              <td class="numeric-cell">{{ result.get('第二低点日期', '—') }}</td>
+              <td class="numeric-cell">{{ result.get('当前价格', '—') }}</td>
+              <td class="numeric-cell">{{ result.get('第一低点价格', '—') }} → {{ result.get('第二低点价格', '—') }}</td>
+              <td class="numeric-cell">{{ result.get('价格创新低幅度', '—') }}</td>
+              <td class="numeric-cell">{{ result.get('第一DIF低点', '—') }} → {{ result.get('第二DIF低点', '—') }}</td>
+              <td class="numeric-cell is-positive">{{ result.get('DIF抬高幅度', '—') }}</td>
+              <td class="numeric-cell">{{ result.get('价格反弹幅度', '—') }}</td>
+              <td><span class="histogram-state histogram-state--{{ 'red' if result.get('当前柱状态') == '红柱' else 'green' }}">{{ result.get('当前柱状态', '—') }}</span></td>
+              <td class="truncate-cell" title="{{ result.get('关联ETF代码', '') }} {{ result.get('关联ETF名称', '') }}">
+                {% if result.get('关联ETF代码') %}{{ result.get('关联ETF代码') }} {{ result.get('关联ETF名称') }}{% else %}<span class="muted">数据暂缺</span>{% endif %}
+              </td>
+            </tr>
+          {% else %}
+            <tr class="empty-row"><td colspan="12">当前运行没有命中底背离板块</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        {% endif %}
       </div>
     </section>
   </main>

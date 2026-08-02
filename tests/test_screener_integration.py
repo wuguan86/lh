@@ -75,7 +75,9 @@ def test_analyze_accepts_deep_target_break_and_reports_drawdown(monkeypatch: pyt
     result = screener.analyze_board_pattern(screener.BoardInfo("概念", "测试板块"), kline_df)
 
     assert result is not None
-    assert result["目标位价格"] == 100.0
+    assert result["1:1等距目标价"] == 100.0
+    assert result["1.272扩展目标价"] == 86.4
+    assert result["1.618扩展目标价"] == 69.1
     assert result["目标偏离率"] == "50.00%"
     assert result["上涨幅度"] == "33.33%"
     assert result["首次跌破目标日期"] == dates[70].strftime("%Y-%m-%d")

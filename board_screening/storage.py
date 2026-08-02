@@ -8,6 +8,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
+from board_screening.core import normalize_target_price_fields
+from board_screening.strategies import STRATEGY_EQUAL_DECLINE, validate_strategy
+
 
 SUCCESS_STATUSES = ("succeeded", "succeeded_with_warnings")
 
@@ -25,7 +28,7 @@ def _parse_percent(value: object) -> float | None:
 
 
 class RunRepository:
-    """封装运行状态、结果和龙头股票明细的数据库访问。"""
+    """封装筛选任务状态和结果数据访问。"""
 
     def __init__(self, database_path: str | Path) -> None:
         self.database_path = Path(database_path)
@@ -51,7 +54,8 @@ class RunRepository:
                     latest_trade_date TEXT,
                     matched_count INTEGER NOT NULL DEFAULT 0,
                     warning_count INTEGER NOT NULL DEFAULT 0,
-                    error_message TEXT
+                    error_message TEXT,
+                    strategy TEXT NOT NULL DEFAULT 'equal_decline'
                 );
 
                 CREATE TABLE IF NOT EXISTS results (
@@ -69,26 +73,34 @@ class RunRepository:
                     payload_json TEXT NOT NULL
                 );
 
-                CREATE TABLE IF NOT EXISTS stock_leaders (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    result_id INTEGER NOT NULL REFERENCES results(id) ON DELETE CASCADE,
-                    rank INTEGER NOT NULL,
-                    stock_code TEXT NOT NULL,
-                    stock_name TEXT NOT NULL,
-                    market_cap REAL NOT NULL
-                );
-
                 CREATE INDEX IF NOT EXISTS idx_runs_trade_date ON runs(latest_trade_date, status);
                 CREATE INDEX IF NOT EXISTS idx_results_run_id ON results(run_id);
                 """
             )
+            run_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(runs)").fetchall()
+            }
+            if "strategy" not in run_columns:
+                # 旧数据库中的历史任务均为等距下跌，迁移时保持原有业务语义。
+                connection.execute(
+                    "ALTER TABLE runs ADD COLUMN strategy TEXT NOT NULL DEFAULT 'equal_decline'"
+                )
 
-    def create_run(self, trigger_type: str, started_at: datetime | None = None) -> int:
+    def create_run(
+        self,
+        trigger_type: str,
+        started_at: datetime | None = None,
+        strategy: str = STRATEGY_EQUAL_DECLINE,
+    ) -> int:
+        validate_strategy(strategy)
         started_at = started_at or _utc_now()
         with self._connect() as connection:
             cursor = connection.execute(
-                "INSERT INTO runs (trigger_type, status, started_at) VALUES (?, 'queued', ?)",
-                (trigger_type, started_at.isoformat()),
+                """
+                INSERT INTO runs (trigger_type, status, started_at, strategy)
+                VALUES (?, 'queued', ?, ?)
+                """,
+                (trigger_type, started_at.isoformat(), strategy),
             )
             return int(cursor.lastrowid)
 
@@ -128,7 +140,7 @@ class RunRepository:
         with self._connect() as connection:
             for record in records:
                 public_record = {key: value for key, value in record.items() if not key.startswith("_")}
-                cursor = connection.execute(
+                connection.execute(
                     """
                     INSERT INTO results (
                         run_id, board_type, board_name, latest_trade_date, current_price,
@@ -141,7 +153,7 @@ class RunRepository:
                         record["板块名称"],
                         record["最新交易日"],
                         record.get("当前价格"),
-                        record.get("目标位价格"),
+                        record.get("1:1等距目标价", record.get("目标位价格")),
                         _parse_percent(record.get("目标偏离率")),
                         _parse_percent(record.get("最大跌幅")),
                         record.get("关联ETF代码", ""),
@@ -149,53 +161,62 @@ class RunRepository:
                         json.dumps(public_record, ensure_ascii=False),
                     ),
                 )
-                result_id = int(cursor.lastrowid)
-                for rank, leader in enumerate(record.get("_stock_leaders", []), start=1):
-                    connection.execute(
-                        """
-                        INSERT INTO stock_leaders
-                            (result_id, rank, stock_code, stock_name, market_cap)
-                        VALUES (?, ?, ?, ?, ?)
-                        """,
-                        (result_id, rank, leader["code"], leader["name"], leader["market_cap"]),
-                    )
 
     def get_run(self, run_id: int) -> dict[str, object] | None:
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
         return dict(row) if row else None
 
-    def get_runs(self, limit: int | None = None, retention_days: int = 90) -> list[dict[str, object]]:
+    def get_runs(
+        self,
+        limit: int | None = None,
+        retention_days: int = 90,
+        strategy: str | None = None,
+    ) -> list[dict[str, object]]:
         cutoff = (_utc_now() - timedelta(days=retention_days)).isoformat()
-        sql = "SELECT * FROM runs WHERE started_at >= ? ORDER BY id DESC"
+        sql = "SELECT * FROM runs WHERE started_at >= ?"
         parameters: tuple[object, ...] = (cutoff,)
+        if strategy is not None:
+            validate_strategy(strategy)
+            sql += " AND strategy = ?"
+            parameters += (strategy,)
+        sql += " ORDER BY id DESC"
         if limit is not None:
             sql += " LIMIT ?"
-            parameters = (cutoff, limit)
+            parameters += (limit,)
         with self._connect() as connection:
             rows = connection.execute(sql, parameters).fetchall()
         return [dict(row) for row in rows]
 
-    def get_current_run(self) -> dict[str, object] | None:
-        runs = self.get_runs(limit=1)
+    def get_current_run(self, strategy: str | None = None) -> dict[str, object] | None:
+        runs = self.get_runs(limit=1, strategy=strategy)
         return runs[0] if runs else None
 
-    def get_latest_successful_run(self) -> dict[str, object] | None:
+    def get_latest_successful_run(
+        self,
+        strategy: str = STRATEGY_EQUAL_DECLINE,
+    ) -> dict[str, object] | None:
+        validate_strategy(strategy)
         placeholders = ",".join("?" for _ in SUCCESS_STATUSES)
         cutoff = (_utc_now() - timedelta(days=90)).isoformat()
         with self._connect() as connection:
             row = connection.execute(
                 f"""
                 SELECT * FROM runs
-                WHERE status IN ({placeholders}) AND started_at >= ?
+                WHERE status IN ({placeholders}) AND started_at >= ? AND strategy = ?
                 ORDER BY id DESC LIMIT 1
                 """,
-                (*SUCCESS_STATUSES, cutoff),
+                (*SUCCESS_STATUSES, cutoff, strategy),
             ).fetchone()
         return dict(row) if row else None
 
     def get_results(self, run_id: int) -> list[dict[str, object]]:
         with self._connect() as connection:
+            run_row = connection.execute(
+                "SELECT strategy FROM runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+            strategy = run_row["strategy"] if run_row else STRATEGY_EQUAL_DECLINE
             result_rows = connection.execute(
                 """
                 SELECT * FROM results
@@ -207,35 +228,29 @@ class RunRepository:
             records: list[dict[str, object]] = []
             for row in result_rows:
                 record = json.loads(row["payload_json"])
-                record["目标偏离率数值"] = row["target_deviation"]
-                record["最大跌幅数值"] = row["max_drawdown"]
-                leader_rows = connection.execute(
-                    "SELECT * FROM stock_leaders WHERE result_id = ? ORDER BY rank",
-                    (row["id"],),
-                ).fetchall()
-                record["龙头股票"] = [
-                    {
-                        "rank": leader["rank"],
-                        "code": leader["stock_code"],
-                        "name": leader["stock_name"],
-                        "market_cap": leader["market_cap"],
-                    }
-                    for leader in leader_rows
-                ]
+                if strategy == STRATEGY_EQUAL_DECLINE:
+                    record = normalize_target_price_fields(record)
+                    record["目标偏离率数值"] = row["target_deviation"]
+                    record["最大跌幅数值"] = row["max_drawdown"]
                 records.append(record)
         return records
 
-    def has_successful_trade_date(self, trade_date: str) -> bool:
+    def has_successful_trade_date(
+        self,
+        trade_date: str,
+        strategy: str = STRATEGY_EQUAL_DECLINE,
+    ) -> bool:
+        validate_strategy(strategy)
         placeholders = ",".join("?" for _ in SUCCESS_STATUSES)
         with self._connect() as connection:
             row = connection.execute(
                 f"""
                 SELECT 1 FROM runs
                 WHERE latest_trade_date = ? AND trigger_type = 'scheduled'
-                    AND status IN ({placeholders})
+                    AND status IN ({placeholders}) AND strategy = ?
                 LIMIT 1
                 """,
-                (trade_date, *SUCCESS_STATUSES),
+                (trade_date, *SUCCESS_STATUSES, strategy),
             ).fetchone()
         return row is not None
 

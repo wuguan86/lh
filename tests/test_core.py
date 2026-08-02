@@ -7,6 +7,7 @@ import pytest
 
 from board_screening.core import (
     OUTPUT_COLUMNS,
+    calculate_decline_target_prices,
     calculate_post_target_drawdown,
     calculate_signed_target_deviation,
     is_target_price_qualified,
@@ -71,6 +72,23 @@ def test_key_price_columns_are_adjacent() -> None:
 
     assert OUTPUT_COLUMNS[current_position : current_position + 3] == [
         "当前价格",
-        "目标位价格",
-        "目标偏离率",
+        "1:1等距目标价",
+        "1.272扩展目标价",
     ]
+
+
+def test_three_target_price_columns_are_adjacent() -> None:
+    target_position = OUTPUT_COLUMNS.index("1:1等距目标价")
+
+    assert OUTPUT_COLUMNS[target_position : target_position + 3] == [
+        "1:1等距目标价",
+        "1.272扩展目标价",
+        "1.618扩展目标价",
+    ]
+    assert not any(column.startswith("市值龙头") for column in OUTPUT_COLUMNS)
+
+
+def test_decline_targets_use_configured_extension_ratios() -> None:
+    target_prices = calculate_decline_target_prices(support_level=150.0, peak_price=200.0)
+
+    assert target_prices == pytest.approx((100.0, 86.4, 69.1))

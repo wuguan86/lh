@@ -6,10 +6,14 @@ import logging
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Mapping
 
 from board_screening.models import ScreeningOutput
 from board_screening.storage import RunRepository
+from board_screening.strategies import (
+    STRATEGY_EQUAL_DECLINE,
+    validate_strategy,
+)
 
 
 class RunAlreadyActive(RuntimeError):
@@ -25,16 +29,24 @@ class RunCoordinator:
         screening_callable: Callable[[], ScreeningOutput],
         csv_writer: Callable[[Iterable[dict[str, object]]], None],
         retention_days: int = 90,
+        strategy_screeners: Mapping[str, Callable[[], ScreeningOutput]] | None = None,
+        strategy_csv_writers: Mapping[
+            str, Callable[[Iterable[dict[str, object]]], None]
+        ]
+        | None = None,
     ) -> None:
         self.repository = repository
         self.screening_callable = screening_callable
         self.csv_writer = csv_writer
         self.retention_days = retention_days
+        self.strategy_screeners = dict(strategy_screeners or {})
+        self.strategy_csv_writers = dict(strategy_csv_writers or {})
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="board-screening")
         self._state_lock = threading.Lock()
         self._idle_condition = threading.Condition(self._state_lock)
         self._is_submitting = False
         self._active_run_id: int | None = None
+        self._active_strategy: str | None = None
         self._future: Future[None] | None = None
         self._idle_callbacks: list[Callable[[], None]] = []
 
@@ -43,18 +55,33 @@ class RunCoordinator:
         with self._state_lock:
             return self._active_run_id
 
-    def submit(self, trigger_type: str) -> int:
+    @property
+    def active_strategy(self) -> str | None:
+        with self._state_lock:
+            return self._active_strategy
+
+    def submit(
+        self,
+        trigger_type: str,
+        strategy: str = STRATEGY_EQUAL_DECLINE,
+    ) -> int:
+        validate_strategy(strategy)
         with self._idle_condition:
             if self._is_submitting or self._active_run_id is not None:
                 raise RunAlreadyActive("已有筛选任务正在执行")
             self._is_submitting = True
         run_id: int | None = None
         try:
-            run_id = self.repository.create_run(trigger_type)
+            if strategy == STRATEGY_EQUAL_DECLINE:
+                # 默认策略沿用旧调用形式，兼容已有仓储替身和外部调用方。
+                run_id = self.repository.create_run(trigger_type)
+            else:
+                run_id = self.repository.create_run(trigger_type, strategy=strategy)
             with self._idle_condition:
                 self._active_run_id = run_id
+                self._active_strategy = strategy
                 self._is_submitting = False
-            self._future = self._executor.submit(self._execute, run_id)
+            self._future = self._executor.submit(self._execute, run_id, strategy)
             return run_id
         except Exception as exc:
             if run_id is not None:
@@ -62,6 +89,7 @@ class RunCoordinator:
             with self._idle_condition:
                 self._is_submitting = False
                 self._active_run_id = None
+                self._active_strategy = None
                 idle_callbacks = list(self._idle_callbacks)
                 self._idle_callbacks.clear()
                 self._idle_condition.notify_all()
@@ -69,12 +97,14 @@ class RunCoordinator:
                 callback()
             raise
 
-    def _execute(self, run_id: int) -> None:
+    def _execute(self, run_id: int, strategy: str) -> None:
         try:
             self.repository.mark_running(run_id)
-            output = self.screening_callable()
+            screening_callable = self.strategy_screeners.get(strategy, self.screening_callable)
+            output = screening_callable()
             self.repository.save_results(run_id, output.records)
-            self.csv_writer(output.records)
+            csv_writer = self.strategy_csv_writers.get(strategy, self.csv_writer)
+            csv_writer(output.records)
             status = "succeeded_with_warnings" if output.warnings else "succeeded"
             self.repository.finish_run(
                 run_id,
@@ -91,6 +121,7 @@ class RunCoordinator:
         finally:
             with self._idle_condition:
                 self._active_run_id = None
+                self._active_strategy = None
                 idle_callbacks = list(self._idle_callbacks)
                 self._idle_callbacks.clear()
             for callback in idle_callbacks:
@@ -133,10 +164,14 @@ class ScheduledRunService:
         repository: RunRepository,
         coordinator: RunCoordinator,
         latest_trade_date_provider: Callable[[], str],
+        strategies: tuple[str, ...] = (STRATEGY_EQUAL_DECLINE,),
     ) -> None:
         self.repository = repository
         self.coordinator = coordinator
         self.latest_trade_date_provider = latest_trade_date_provider
+        for strategy in strategies:
+            validate_strategy(strategy)
+        self.strategies = strategies
 
     def check_and_submit(self) -> int | None:
         try:
@@ -144,12 +179,17 @@ class ScheduledRunService:
         except Exception as exc:
             logging.warning("获取最新交易日失败，本次自动检查已跳过，原因：%s", exc)
             return None
-        if self.repository.has_successful_trade_date(latest_trade_date):
-            logging.info("交易日 %s 已有成功结果，本次不重复执行。", latest_trade_date)
-            return None
-        try:
-            return self.coordinator.submit("scheduled")
-        except RunAlreadyActive:
-            logging.info("已有筛选任务运行，将在任务空闲后补提自动筛选。")
-            self.coordinator.run_after_idle(self.check_and_submit)
-            return None
+        for strategy in self.strategies:
+            if self.repository.has_successful_trade_date(latest_trade_date, strategy):
+                continue
+            try:
+                run_id = self.coordinator.submit("scheduled", strategy)
+                # 当前策略结束后继续检查下一策略，全部完成时该回调会自然退出。
+                self.coordinator.run_after_idle(self.check_and_submit)
+                return run_id
+            except RunAlreadyActive:
+                logging.info("已有筛选任务运行，将在任务空闲后补提自动筛选。")
+                self.coordinator.run_after_idle(self.check_and_submit)
+                return None
+        logging.info("交易日 %s 的全部目标策略已有成功结果，本次不重复执行。", latest_trade_date)
+        return None

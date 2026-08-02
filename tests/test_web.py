@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from board_screening.config import Settings
 from board_screening.jobs import RunAlreadyActive
 from board_screening.storage import RunRepository
+from board_screening.strategies import STRATEGY_MACD_DIVERGENCE
 from board_screening.web import create_app
 
 
@@ -14,11 +15,14 @@ class FakeCoordinator:
     def __init__(self, reject: bool = False, active_run_id: int | None = None) -> None:
         self.reject = reject
         self.active_run_id = active_run_id
+        self.active_strategy = None
+        self.submitted_strategy = None
 
-    def submit(self, trigger_type: str) -> int:
+    def submit(self, trigger_type: str, strategy: str = "equal_decline") -> int:
         if self.reject:
             raise RunAlreadyActive("已有筛选任务正在执行")
         assert trigger_type == "manual"
+        self.submitted_strategy = strategy
         return 42
 
     def shutdown(self) -> None:
@@ -71,9 +75,11 @@ def test_login_rejects_wrong_password_and_renders_dashboard(tmp_path) -> None:
         dashboard = client.get("/")
 
     assert csrf_token
-    assert "板块等距下跌监测" in dashboard.text
-    assert dashboard.text.index("当前价格") < dashboard.text.index("目标价格")
-    assert dashboard.text.index("目标价格") < dashboard.text.index("目标偏离率")
+    assert "板块形态监测" in dashboard.text
+    assert dashboard.text.index("当前价格") < dashboard.text.index("1:1 等距")
+    assert dashboard.text.index("1:1 等距") < dashboard.text.index("1.272 扩展")
+    assert dashboard.text.index("1.272 扩展") < dashboard.text.index("1.618 扩展")
+    assert dashboard.text.index("1.618 扩展") < dashboard.text.index("目标偏离率")
 
 
 def test_non_ascii_credentials_and_invalid_csrf_fail_cleanly(tmp_path) -> None:
@@ -141,7 +147,9 @@ def test_csv_download_has_bom_and_adjacent_price_headers(tmp_path) -> None:
                     "板块名称": "5G",
                     "最新交易日": "2026-07-24",
                     "当前价格": 95.0,
-                    "目标位价格": 100.0,
+                    "1:1等距目标价": 100.0,
+                    "1.272扩展目标价": 86.4,
+                    "1.618扩展目标价": 69.1,
                     "目标偏离率": "5.00%",
                 }
             ],
@@ -153,7 +161,7 @@ def test_csv_download_has_bom_and_adjacent_price_headers(tmp_path) -> None:
     assert response.status_code == 200
     assert response.content.startswith(b"\xef\xbb\xbf")
     header = response.content.decode("utf-8-sig").splitlines()[0]
-    assert "当前价格,目标位价格,目标偏离率" in header
+    assert "当前价格,1:1等距目标价,1.272扩展目标价,1.618扩展目标价,目标偏离率" in header
 
 
 def test_dashboard_contains_history_filters_status_and_detail_surface(tmp_path) -> None:
@@ -206,7 +214,9 @@ def test_dashboard_keeps_last_successful_results_after_latest_failure(tmp_path) 
                     "板块名称": "5G",
                     "最新交易日": "2026-07-24",
                     "当前价格": 95.0,
-                    "目标位价格": 100.0,
+                    "1:1等距目标价": 100.0,
+                    "1.272扩展目标价": 86.4,
+                    "1.618扩展目标价": 69.1,
                     "目标偏离率": "5.00%",
                 }
             ],
@@ -242,3 +252,55 @@ def test_run_detail_api_and_unknown_result_run_contract(tmp_path) -> None:
     assert detail_response.status_code == 200
     assert detail_response.json()["id"] == run_id
     assert missing_results_response.status_code == 404
+
+
+def test_divergence_dashboard_exposes_strategy_period_and_category_filters(tmp_path) -> None:
+    with build_client(tmp_path) as client:
+        login(client)
+        response = client.get(f"/?strategy={STRATEGY_MACD_DIVERGENCE}")
+
+    assert "MACD底背离筛选结果" in response.text
+    assert 'id="timeframe-filter"' in response.text
+    assert 'id="category-filter"' in response.text
+    assert "线和绿柱双背离" in response.text
+
+
+def test_manual_run_accepts_divergence_strategy(tmp_path) -> None:
+    coordinator = FakeCoordinator()
+    with build_client(tmp_path, coordinator) as client:
+        csrf_token = login(client)
+        response = client.post(
+            "/api/runs",
+            headers={"X-CSRF-Token": csrf_token},
+            json={"strategy": STRATEGY_MACD_DIVERGENCE},
+        )
+
+    assert response.status_code == 202
+    assert coordinator.submitted_strategy == STRATEGY_MACD_DIVERGENCE
+
+
+def test_divergence_csv_uses_diagnostic_columns(tmp_path) -> None:
+    with build_client(tmp_path) as client:
+        login(client)
+        repository: RunRepository = client.app.state.repository
+        run_id = repository.create_run("manual", strategy=STRATEGY_MACD_DIVERGENCE)
+        repository.save_results(
+            run_id,
+            [
+                {
+                    "筛选策略": "MACD底背离",
+                    "板块类型": "概念",
+                    "板块名称": "5G",
+                    "周期": "日线",
+                    "背离分类": "单纯底背离",
+                    "背离次数": 1,
+                    "最新交易日": "2026-07-24",
+                    "当前价格": 95.0,
+                }
+            ],
+        )
+        response = client.get(f"/api/runs/{run_id}/csv")
+
+    header = response.content.decode("utf-8-sig").splitlines()[0]
+    assert "筛选策略,板块类型,板块名称,周期,背离分类,背离次数" in header
+    assert "1:1等距目标价" not in header

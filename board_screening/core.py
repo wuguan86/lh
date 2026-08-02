@@ -9,13 +9,21 @@ import pandas as pd
 
 
 TARGET_TOLERANCE = 0.03
+TARGET_PRICE_COLUMNS = (
+    "1:1等距目标价",
+    "1.272扩展目标价",
+    "1.618扩展目标价",
+)
+TARGET_EXTENSION_RATIOS = (1.0, 1.272, 1.618)
 
 OUTPUT_COLUMNS = [
     "板块类型",
     "板块名称",
     "最新交易日",
     "当前价格",
-    "目标位价格",
+    "1:1等距目标价",
+    "1.272扩展目标价",
+    "1.618扩展目标价",
     "目标偏离率",
     "支撑位",
     "最高点价格",
@@ -26,9 +34,6 @@ OUTPUT_COLUMNS = [
     "最大跌幅",
     "关联ETF代码",
     "关联ETF名称",
-    "市值龙头1",
-    "市值龙头2",
-    "市值龙头3",
     "跌破日期",
     "统计天数",
     "下跌天数占比",
@@ -47,6 +52,39 @@ class TargetDrawdown:
     lowest_price: float
     lowest_date: datetime
     decline_rate: float
+
+
+def calculate_decline_target_prices(support_level: float, peak_price: float) -> tuple[float, ...]:
+    """按上涨波段高度计算三档向下目标价。"""
+    if support_level <= 0 or peak_price < support_level:
+        raise ValueError("支撑位必须为正数且不能高于最高点")
+    wave_height = peak_price - support_level
+    return tuple(support_level - wave_height * ratio for ratio in TARGET_EXTENSION_RATIOS)
+
+
+def normalize_target_price_fields(record: dict[str, object]) -> dict[str, object]:
+    """兼容旧记录，并在波段价格完整时补算缺失的扩展目标。"""
+    normalized_record = dict(record)
+    if TARGET_PRICE_COLUMNS[0] not in normalized_record and "目标位价格" in normalized_record:
+        normalized_record[TARGET_PRICE_COLUMNS[0]] = normalized_record["目标位价格"]
+
+    has_all_target_prices = all(column in normalized_record for column in TARGET_PRICE_COLUMNS)
+    if has_all_target_prices and "上涨幅度" in normalized_record:
+        return normalized_record
+    try:
+        support_level = float(normalized_record["支撑位"])
+        peak_price = float(normalized_record["最高点价格"])
+        target_prices = calculate_decline_target_prices(
+            support_level,
+            peak_price,
+        )
+    except (KeyError, TypeError, ValueError):
+        return normalized_record
+
+    for column, target_price in zip(TARGET_PRICE_COLUMNS, target_prices):
+        normalized_record.setdefault(column, round(target_price, 3) if target_price > 0 else "")
+    normalized_record.setdefault("上涨幅度", f"{(peak_price - support_level) / support_level:.2%}")
+    return normalized_record
 
 
 def is_target_price_qualified(

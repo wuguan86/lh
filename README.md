@@ -1,4 +1,4 @@
-# 板块等距下跌监测
+# 板块形态监测
 
 这是现有同花顺板块筛选器的网页版。服务保留命令行 CSV 输出，并增加登录、历史结果、手动执行和每天北京时间 18:00 自动检查。
 
@@ -52,11 +52,19 @@ $env:SESSION_SECRET = "请替换为至少32位的随机字符串"
 uvicorn board_screening.web:create_default_app --factory --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-命令行兼容入口保持不变：
+命令行默认仍执行等距下跌：
 
 ```powershell
 python board_pattern_screener.py
 ```
+
+执行日线、周线、月线 MACD 底背离筛选：
+
+```powershell
+python board_pattern_screener.py --strategy macd-divergence
+```
+
+底背离首次运行会回填约 12 年日线并写入 SQLite 行情缓存，耗时明显长于后续增量运行。周线和月线仅使用交易日历确认已经结束的完整周期。
 
 最小上涨幅度通过环境变量 `MIN_WAVE_RISE_PERCENT` 配置，数值按百分数填写，默认值为 `10`。Docker Compose 可直接修改 `.env`；本地命令行可在运行前执行 `$env:MIN_WAVE_RISE_PERCENT = "10"`。最近局部低点对应的上涨幅度不足时，筛选器会继续向左寻找更大级别的局部低点；所有候选波段均不达标时才过滤该板块。
 
@@ -65,5 +73,5 @@ python board_pattern_screener.py
 - 每天北京时间 18:00 检查新浪交易日历。
 - 最新交易日已有成功结果时不会重复入库。
 - 容器错过执行时间后，会在下次启动时补跑最近遗漏的已收盘交易日。
-- 同花顺核心行情失败会将任务标记为失败；ETF 或市值龙头数据失败时保留筛选结果并显示“数据暂缺”。
+- 同花顺核心行情失败会将任务标记为失败；ETF 数据失败时保留筛选结果并显示“数据暂缺”。
 - “首次跌破目标”按收盘价低于目标价确认，最大跌幅再使用确认日至今的日内最低价计算。

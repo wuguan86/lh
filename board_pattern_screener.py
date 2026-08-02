@@ -7,13 +7,11 @@ A 股同花顺板块等距下跌形态筛选程序。
 
 from __future__ import annotations
 
+import argparse
 import logging
 import math
 import os
 import time
-from dataclasses import dataclass
-from datetime import date, timedelta
-from typing import Callable
 
 import akshare as ak
 import numpy as np
@@ -21,12 +19,28 @@ import pandas as pd
 
 from board_screening.core import (
     OUTPUT_COLUMNS,
+    calculate_decline_target_prices,
     calculate_post_target_drawdown,
     calculate_signed_target_deviation,
     is_target_price_qualified,
 )
 from board_screening.enrichment import DataEnricher
+from board_screening.market_data import (
+    BOARD_TYPE_CONCEPT,
+    BOARD_TYPE_INDUSTRY,
+    REQUEST_SLEEP_SECONDS,
+    BoardInfo,
+    CachedKlineProvider,
+    KlineCache,
+    fetch_board_kline,
+    fetch_board_kline_with_retry,
+    get_all_boards,
+    get_date_range,
+    normalize_kline,
+)
 from board_screening.models import ScreeningOutput
+from board_screening.scheduler import fetch_latest_trade_date
+from board_screening.strategies import STRATEGY_EQUAL_DECLINE, STRATEGY_MACD_DIVERGENCE
 
 
 LOOKBACK_TRADING_DAYS = 90
@@ -36,19 +50,8 @@ CLOSE_DOWN_RATIO_THRESHOLD = 0.60
 MAX_REBOUND_DAYS = 1
 BIAS_MA_WINDOW = 20
 BIAS_THRESHOLD = 0.07
-FETCH_CALENDAR_DAYS = 220
-RETRY_TIMES = 3
-REQUEST_SLEEP_SECONDS = 0.8
 OUTPUT_FILE = "ths_board_screen_result.csv"
 DEFAULT_MIN_WAVE_RISE_PERCENT = 10.0
-
-BOARD_TYPE_INDUSTRY = "行业"
-BOARD_TYPE_CONCEPT = "概念"
-
-@dataclass(frozen=True)
-class BoardInfo:
-    board_type: str
-    board_name: str
 
 
 def setup_logging() -> None:
@@ -58,131 +61,6 @@ def setup_logging() -> None:
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%H:%M:%S",
     )
-
-
-def get_all_boards(warnings: list[str] | None = None) -> list[BoardInfo]:
-    """获取同花顺行业和概念板块列表，任一列表失败时记录日志并继续处理另一类。"""
-    board_frames: list[pd.DataFrame] = []
-    warning_messages = warnings if warnings is not None else []
-
-    board_sources: list[tuple[str, Callable[[], pd.DataFrame]]] = [
-        (BOARD_TYPE_INDUSTRY, ak.stock_board_industry_name_ths),
-        (BOARD_TYPE_CONCEPT, ak.stock_board_concept_name_ths),
-    ]
-
-    for board_type, fetcher in board_sources:
-        try:
-            raw_df = fetcher()
-            if raw_df.empty or "name" not in raw_df.columns:
-                message = f"获取{board_type}板块列表为空或缺少 name 字段，已跳过。"
-                logging.warning(message)
-                warning_messages.append(message)
-                continue
-
-            temp_df = raw_df[["name"]].copy()
-            temp_df["board_type"] = board_type
-            temp_df.rename(columns={"name": "board_name"}, inplace=True)
-            board_frames.append(temp_df)
-            logging.info("已获取%s板块列表，共 %s 个。", board_type, len(temp_df))
-        except Exception as exc:
-            logging.exception("获取%s板块列表失败，原因：%s", board_type, exc)
-            warning_messages.append(f"获取{board_type}板块列表失败：{exc}")
-
-    if not board_frames:
-        return []
-
-    boards_df = pd.concat(board_frames, ignore_index=True)
-    boards_df["board_name"] = boards_df["board_name"].astype(str).str.strip()
-    boards_df = boards_df[boards_df["board_name"] != ""]
-    boards_df.drop_duplicates(subset=["board_type", "board_name"], inplace=True)
-
-    return [
-        BoardInfo(board_type=row.board_type, board_name=row.board_name)
-        for row in boards_df.itertuples(index=False)
-    ]
-
-
-def get_date_range() -> tuple[str, str]:
-    """按自然日回溯一段时间，确保清洗后通常仍有足够的 90 个交易日。"""
-    end_day = date.today()
-    start_day = end_day - timedelta(days=FETCH_CALENDAR_DAYS)
-    return start_day.strftime("%Y%m%d"), end_day.strftime("%Y%m%d")
-
-
-def fetch_board_kline(board: BoardInfo, start_date: str, end_date: str) -> pd.DataFrame:
-    """按板块类型调用对应 AKShare 接口获取同花顺日 K 数据。"""
-    if board.board_type == BOARD_TYPE_INDUSTRY:
-        return ak.stock_board_industry_index_ths(
-            symbol=board.board_name,
-            start_date=start_date,
-            end_date=end_date,
-        )
-
-    if board.board_type == BOARD_TYPE_CONCEPT:
-        return ak.stock_board_concept_index_ths(
-            symbol=board.board_name,
-            start_date=start_date,
-            end_date=end_date,
-        )
-
-    raise ValueError(f"未知板块类型：{board.board_type}")
-
-
-def fetch_board_kline_with_retry(
-    board: BoardInfo,
-    start_date: str,
-    end_date: str,
-) -> pd.DataFrame | None:
-    """网络数据可能偶发失败，单板块重试后仍失败则返回 None，避免中断全局筛选。"""
-    for attempt in range(1, RETRY_TIMES + 1):
-        try:
-            return fetch_board_kline(board, start_date, end_date)
-        except Exception as exc:
-            logging.warning(
-                "获取【%s-%s】日 K 失败，第 %s/%s 次尝试，原因：%s",
-                board.board_type,
-                board.board_name,
-                attempt,
-                RETRY_TIMES,
-                exc,
-            )
-            if attempt < RETRY_TIMES:
-                # 失败后逐步拉长等待时间，降低源站临时限流对后续请求的影响。
-                time.sleep(REQUEST_SLEEP_SECONDS * attempt)
-
-    logging.error("【%s-%s】连续获取失败，已跳过。", board.board_type, board.board_name)
-    return None
-
-
-def normalize_kline(raw_df: pd.DataFrame) -> pd.DataFrame:
-    """统一中文行情字段为英文内部字段，并完成日期排序和数值清洗。"""
-    column_map = {
-        "日期": "date",
-        "开盘价": "open",
-        "最高价": "high",
-        "最低价": "low",
-        "收盘价": "close",
-        "成交量": "volume",
-        "成交额": "amount",
-    }
-    required_columns = list(column_map.keys())
-    missing_columns = [column for column in required_columns if column not in raw_df.columns]
-    if missing_columns:
-        raise ValueError(f"日 K 数据缺少必要字段：{missing_columns}")
-
-    kline_df = raw_df[required_columns].rename(columns=column_map).copy()
-    kline_df["date"] = pd.to_datetime(kline_df["date"], errors="coerce")
-
-    numeric_columns = ["open", "high", "low", "close", "volume", "amount"]
-    for column in numeric_columns:
-        kline_df[column] = pd.to_numeric(kline_df[column], errors="coerce")
-
-    # 核心形态只依赖日期、高低收；这些字段缺失时该交易日无法参与计算。
-    kline_df.dropna(subset=["date", "high", "low", "close"], inplace=True)
-    kline_df.sort_values("date", inplace=True)
-    kline_df.drop_duplicates(subset=["date"], keep="last", inplace=True)
-    kline_df.reset_index(drop=True, inplace=True)
-    return kline_df
 
 
 def find_nearest_left_local_low(
@@ -322,7 +200,9 @@ def analyze_board_pattern(
     support_level = float(lookback_df.loc[support_position, "low"])
     wave_height = peak_price - support_level
     wave_rise_rate = wave_height / support_level
-    target_price = support_level - wave_height
+    target_price, extension_target_price_1_272, extension_target_price_1_618 = (
+        calculate_decline_target_prices(support_level, peak_price)
+    )
     latest_row = lookback_df.iloc[-1]
     latest_close = float(latest_row["close"])
 
@@ -368,7 +248,13 @@ def analyze_board_pattern(
         "板块名称": board.board_name,
         "最新交易日": latest_row["date"].strftime("%Y-%m-%d"),
         "当前价格": round(latest_close, 3),
-        "目标位价格": round(target_price, 3),
+        "1:1等距目标价": round(target_price, 3),
+        "1.272扩展目标价": (
+            round(extension_target_price_1_272, 3) if extension_target_price_1_272 > 0 else ""
+        ),
+        "1.618扩展目标价": (
+            round(extension_target_price_1_618, 3) if extension_target_price_1_618 > 0 else ""
+        ),
         "目标偏离率": f"{target_deviation:.2%}",
         "支撑位": round(support_level, 3),
         "最高点价格": round(peak_price, 3),
@@ -383,9 +269,6 @@ def analyze_board_pattern(
         "最大跌幅": f"{target_drawdown.decline_rate:.2%}" if target_drawdown else "",
         "关联ETF代码": "",
         "关联ETF名称": "",
-        "市值龙头1": "",
-        "市值龙头2": "",
-        "市值龙头3": "",
         "跌破日期": lookback_df.loc[break_position, "date"].strftime("%Y-%m-%d"),
         "统计天数": period_days,
         "下跌天数占比": f"{close_down_ratio:.2%}",
@@ -405,8 +288,10 @@ def save_results(result_df: pd.DataFrame) -> None:
 def run_screening(
     enricher: DataEnricher | None = None,
     min_wave_rise_rate: float | None = None,
+    kline_provider: CachedKlineProvider | None = None,
+    required_trade_date: str | None = None,
 ) -> ScreeningOutput:
-    """执行完整筛选并仅为命中板块补充 ETF 和市值龙头。"""
+    """执行完整筛选并仅为命中板块补充关联 ETF。"""
     configured_min_wave_rise_rate = (
         get_min_wave_rise_rate() if min_wave_rise_rate is None else min_wave_rise_rate
     )
@@ -430,14 +315,25 @@ def run_screening(
     for index, board in enumerate(boards, start=1):
         print(f"[{index}/{len(boards)}] 正在筛选【{board.board_type}】{board.board_name} ...")
 
-        raw_df = fetch_board_kline_with_retry(board, start_date, end_date)
-        if raw_df is None:
-            warning_messages.append(f"【{board.board_type}-{board.board_name}】日 K 数据获取失败")
-            time.sleep(REQUEST_SLEEP_SECONDS)
-            continue
-
         try:
-            kline_df = normalize_kline(raw_df)
+            if kline_provider is None:
+                raw_df = fetch_board_kline_with_retry(board, start_date, end_date)
+                if raw_df is None:
+                    warning_messages.append(f"【{board.board_type}-{board.board_name}】日 K 数据获取失败")
+                    time.sleep(REQUEST_SLEEP_SECONDS)
+                    continue
+                kline_df = normalize_kline(raw_df)
+            else:
+                cached_result = kline_provider.load(
+                    board,
+                    start_date,
+                    end_date,
+                    required_trade_date or end_date,
+                )
+                warning_messages.extend(cached_result.warnings)
+                if cached_result.frame is None:
+                    continue
+                kline_df = cached_result.frame
             if not kline_df.empty:
                 latest_trade_dates.append(kline_df.iloc[-1]["date"].strftime("%Y-%m-%d"))
                 processed_board_count += 1
@@ -456,7 +352,7 @@ def run_screening(
             matched_records.append(matched_record)
             print(
                 f"    命中：当前价 {matched_record['当前价格']}，"
-                f"目标位 {matched_record['目标位价格']}，"
+                f"1:1 等距目标位 {matched_record['1:1等距目标价']}，"
                 f"偏离率 {matched_record['目标偏离率']}。"
             )
 
@@ -480,14 +376,42 @@ def run_screening(
     )
 
 
-def main() -> None:
+def main(strategy: str = STRATEGY_EQUAL_DECLINE) -> None:
     setup_logging()
+    database_path = os.getenv("DATABASE_PATH", "data/screening.db")
+    kline_cache = KlineCache(database_path)
+    kline_cache.initialize()
+    kline_provider = CachedKlineProvider(kline_cache)
     try:
-        output = run_screening()
+        if strategy == STRATEGY_MACD_DIVERGENCE:
+            from board_screening.divergence_screening import run_divergence_screening
+
+            output = run_divergence_screening(kline_provider)
+        else:
+            output = run_screening(
+                kline_provider=kline_provider,
+                required_trade_date=fetch_latest_trade_date(),
+            )
     except Exception as exc:
         logging.exception("筛选任务失败，原因：%s", exc)
         print(f"\n筛选任务失败：{exc}")
-        save_results(pd.DataFrame(columns=OUTPUT_COLUMNS))
+        if strategy == STRATEGY_EQUAL_DECLINE:
+            save_results(pd.DataFrame(columns=OUTPUT_COLUMNS))
+        return
+
+    if strategy == STRATEGY_MACD_DIVERGENCE:
+        from board_screening.export import write_latest_csv
+        from board_screening.macd_divergence import DIVERGENCE_OUTPUT_COLUMNS
+
+        result_df = pd.DataFrame(output.records, columns=DIVERGENCE_OUTPUT_COLUMNS)
+        output_file = os.getenv(
+            "DIVERGENCE_OUTPUT_FILE",
+            "ths_board_macd_divergence_result.csv",
+        )
+        print("\n========== MACD 底背离筛选结果 ==========")
+        print(result_df.to_string(index=False) if not result_df.empty else "本次未筛选到底背离板块。")
+        write_latest_csv(output.records, output_file, STRATEGY_MACD_DIVERGENCE)
+        logging.info("筛选结果已保存到：%s", output_file)
         return
 
     result_df = pd.DataFrame(output.records, columns=OUTPUT_COLUMNS)
@@ -508,4 +432,16 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    argument_parser = argparse.ArgumentParser(description="同花顺板块形态筛选")
+    argument_parser.add_argument(
+        "--strategy",
+        choices=("equal-decline", "macd-divergence"),
+        default="equal-decline",
+        help="筛选策略，默认执行等距下跌",
+    )
+    arguments = argument_parser.parse_args()
+    strategy_mapping = {
+        "equal-decline": STRATEGY_EQUAL_DECLINE,
+        "macd-divergence": STRATEGY_MACD_DIVERGENCE,
+    }
+    main(strategy_mapping[arguments.strategy])
