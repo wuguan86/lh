@@ -66,6 +66,16 @@ def test_valid_pair_requires_price_and_dif_rebounds() -> None:
     assert divergence.build_divergence_edges(calculated, pivots) == []
 
 
+def test_pair_rejects_second_low_with_a_lower_interim_low() -> None:
+    calculated = build_calculated_frame(
+        [(50, 100.0, -3.0), (70, 98.0, -4.0), (97, 99.0, -1.0)]
+    )
+    pivots = divergence.find_divergence_pivots(calculated)
+
+    # 不能将 50 与 97 配对：70 的价格低点更低，97 不是该波段的新低。
+    assert divergence.build_divergence_edges(calculated, pivots) == []
+
+
 def test_multiple_divergence_builds_two_edge_chain() -> None:
     calculated = build_calculated_frame(
         [(40, 100.0, -3.0), (68, 99.0, -2.0), (97, 98.0, -1.0)]

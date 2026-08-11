@@ -128,6 +128,7 @@ def build_divergence_edges(
 ) -> list[DivergenceEdge]:
     """构建满足价格创新低、DIF 抬高及双重反弹条件的背离关系。"""
     high_values = calculated_frame["high"].to_numpy(dtype=float)
+    low_values = calculated_frame["low"].to_numpy(dtype=float)
     dif_values = calculated_frame["dif"].to_numpy(dtype=float)
     edges: list[DivergenceEdge] = []
     for start_index, first_pivot in enumerate(pivots):
@@ -141,6 +142,13 @@ def build_divergence_edges(
             if first_pivot.dif >= 0 or second_pivot.dif <= first_pivot.dif:
                 continue
             if second_pivot.price > first_pivot.price * (1 - MIN_PRICE_DROP_RATE):
+                continue
+
+            # 后一个低点必须是该波段的新低，避免跨过更低的中间低点后产生伪背离。
+            interim_lows = low_values[
+                first_pivot.price_position + 1 : second_pivot.price_position
+            ]
+            if interim_lows.size and float(np.min(interim_lows)) <= second_pivot.price:
                 continue
 
             interim_highs = high_values[
