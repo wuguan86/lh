@@ -1,15 +1,29 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from board_screening.stock_market_data import (
     CachedStockKlineProvider,
     StockInfo,
     StockKlineCache,
+    fetch_sina_stock_market_snapshot,
+    fetch_stock_market_snapshot,
     fetch_stock_kline,
     get_eligible_stocks,
     normalize_stock_kline,
 )
+
+
+class FakeMarketResponse:
+    def __init__(self, payload: list[dict[str, object]]) -> None:
+        self.payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> list[dict[str, object]]:
+        return self.payload
 
 
 def build_raw_stock_frame(close: float = 10.0) -> pd.DataFrame:
@@ -25,6 +39,33 @@ def build_raw_stock_frame(close: float = 10.0) -> pd.DataFrame:
             "成交额": 10000.0,
         }
     )
+
+
+def test_sina_market_snapshot_converts_market_cap_from_ten_thousand_yuan() -> None:
+    pages = [
+        [{"code": "600001", "name": "测试股票", "mktcap": 3_010_000.0}],
+    ]
+
+    def requester(*_args, **_kwargs) -> FakeMarketResponse:
+        return FakeMarketResponse(pages.pop(0))
+
+    market_frame = fetch_sina_stock_market_snapshot(requester=requester)
+
+    assert market_frame.iloc[0]["代码"] == "600001"
+    assert market_frame.iloc[0]["总市值"] == 30_100_000_000
+
+
+def test_market_snapshot_falls_back_to_eastmoney() -> None:
+    eastmoney_frame = pd.DataFrame(
+        {"代码": ["600001"], "名称": ["测试股票"], "总市值": [500e8]}
+    )
+
+    result = fetch_stock_market_snapshot(
+        sina_fetcher=lambda: (_ for _ in ()).throw(ConnectionError("新浪失败")),
+        eastmoney_fetcher=lambda: eastmoney_frame,
+    )
+
+    assert result.equals(eastmoney_frame)
 
 
 def test_eligible_stocks_filter_market_cap_exchange_boundary_and_duplicates() -> None:
@@ -53,6 +94,18 @@ def test_eligible_stocks_reject_missing_required_columns() -> None:
         assert "缺少字段" in str(exc)
     else:
         raise AssertionError("缺少总市值字段时应拒绝数据")
+
+
+def test_eligible_stocks_preserve_underlying_connection_error() -> None:
+    def fail_market_snapshot() -> pd.DataFrame:
+        raise ConnectionError("东方财富远端断开连接")
+
+    with pytest.raises(RuntimeError, match="ConnectionError.*东方财富远端断开连接"):
+        get_eligible_stocks(
+            fetcher=fail_market_snapshot,
+            retry_times=1,
+            retry_delay=0,
+        )
 
 
 def test_stock_history_uses_front_adjustment(monkeypatch) -> None:

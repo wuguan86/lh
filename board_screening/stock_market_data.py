@@ -12,6 +12,7 @@ from typing import Callable
 import akshare as ak
 import numpy as np
 import pandas as pd
+import requests
 
 from board_screening.market_data import (
     CACHE_OVERLAP_DAYS,
@@ -23,6 +24,13 @@ from board_screening.market_data import (
 
 
 MIN_TOTAL_MARKET_CAP = 30_000_000_000
+SINA_MARKET_SNAPSHOT_URL = (
+    "http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+    "Market_Center.getHQNodeData"
+)
+SINA_MARKET_CAP_UNIT = 10_000
+SINA_PAGE_SIZE = 100
+SINA_MAX_PAGES = 100
 
 
 @dataclass(frozen=True)
@@ -32,9 +40,86 @@ class StockInfo:
     total_market_cap: float
 
 
+def fetch_sina_stock_market_snapshot(
+    requester: Callable[..., requests.Response] = requests.get,
+) -> pd.DataFrame:
+    """分页获取新浪沪深京 A 股快照，并将万元市值转换为元。"""
+    records: list[dict[str, object]] = []
+    headers = {
+        "Referer": "https://vip.stock.finance.sina.com.cn/mkt/",
+        "User-Agent": "Mozilla/5.0",
+    }
+    for page in range(1, SINA_MAX_PAGES + 1):
+        response = requester(
+            SINA_MARKET_SNAPSHOT_URL,
+            params={
+                "page": str(page),
+                "num": str(SINA_PAGE_SIZE),
+                "sort": "symbol",
+                "asc": "1",
+                "node": "hs_a",
+                "symbol": "",
+                "_s_r_a": "page",
+            },
+            headers=headers,
+            timeout=20,
+        )
+        response.raise_for_status()
+        page_records = response.json()
+        if not isinstance(page_records, list):
+            raise ValueError("新浪 A 股快照返回格式异常")
+        if not page_records:
+            break
+        records.extend(page_records)
+        if len(page_records) < SINA_PAGE_SIZE:
+            break
+    else:
+        raise RuntimeError("新浪 A 股快照分页超过安全上限")
+
+    if not records:
+        raise RuntimeError("新浪 A 股快照为空")
+    market_frame = pd.DataFrame(records)
+    required_columns = {"code", "name", "mktcap"}
+    missing_columns = required_columns.difference(market_frame.columns)
+    if missing_columns:
+        raise ValueError(f"新浪 A 股快照缺少字段：{sorted(missing_columns)}")
+    normalized = market_frame[["code", "name", "mktcap"]].rename(
+        columns={"code": "代码", "name": "名称", "mktcap": "总市值"}
+    )
+    normalized["总市值"] = (
+        pd.to_numeric(normalized["总市值"], errors="coerce") * SINA_MARKET_CAP_UNIT
+    )
+    return normalized
+
+
+def fetch_stock_market_snapshot(
+    sina_fetcher: Callable[[], pd.DataFrame] = fetch_sina_stock_market_snapshot,
+    eastmoney_fetcher: Callable[[], pd.DataFrame] = ak.stock_zh_a_spot_em,
+) -> pd.DataFrame:
+    """优先使用新浪市值快照，失败时回退东方财富。"""
+    sina_failure: Exception | None = None
+    try:
+        return sina_fetcher()
+    except Exception as sina_error:
+        sina_failure = sina_error
+        logging.warning(
+            "获取新浪 A 股市值快照失败，改用东方财富，原因：%s：%s",
+            type(sina_error).__name__,
+            sina_error,
+        )
+    try:
+        return eastmoney_fetcher()
+    except Exception as eastmoney_error:
+        raise RuntimeError(
+            "新浪和东方财富市值快照均获取失败；"
+            f"新浪：{type(sina_failure).__name__}：{sina_failure}；"
+            f"东方财富：{type(eastmoney_error).__name__}：{eastmoney_error}"
+        ) from eastmoney_error
+
+
 def get_eligible_stocks(
     warnings: list[str] | None = None,
-    fetcher: Callable[[], pd.DataFrame] = ak.stock_zh_a_spot_em,
+    fetcher: Callable[[], pd.DataFrame] = fetch_stock_market_snapshot,
     retry_times: int = RETRY_TIMES,
     retry_delay: float = REQUEST_SLEEP_SECONDS,
 ) -> list[StockInfo]:
@@ -49,15 +134,20 @@ def get_eligible_stocks(
         except Exception as exc:
             last_error = exc
             logging.warning(
-                "获取沪深 A 股市值快照失败，第 %s/%s 次，原因：%s",
+                "获取沪深 A 股市值快照失败，第 %s/%s 次，原因：%s：%s",
                 attempt,
                 retry_times,
+                type(exc).__name__,
                 exc,
             )
             if attempt < retry_times:
                 time.sleep(retry_delay * attempt)
     if market_frame is None:
-        raise RuntimeError("获取沪深 A 股市值快照失败") from last_error
+        error_type = type(last_error).__name__ if last_error else "未知异常"
+        error_detail = str(last_error) if last_error else "数据源未返回结果"
+        raise RuntimeError(
+            f"获取沪深 A 股市值快照失败：{error_type}：{error_detail}"
+        ) from last_error
 
     required_columns = {"代码", "名称", "总市值"}
     missing_columns = required_columns.difference(market_frame.columns)

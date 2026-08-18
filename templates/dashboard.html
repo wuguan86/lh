@@ -97,7 +97,7 @@
           {% if not runs %}<option value="">暂无历史</option>{% endif %}
           {% for run in runs %}
             <option value="{{ run['id'] }}" {% if selected_run and run['id'] == selected_run['id'] %}selected{% endif %}>
-              {{ run['latest_trade_date'] or run['started_at'][:10] }} · {{ status_labels.get(run['status'], run['status']) }}
+              #{{ run['id'] }} · {{ run['latest_trade_date'] or run['started_at'][:10] }} · {{ status_labels.get(run['status'], run['status']) }}
             </option>
           {% endfor %}
         </select>

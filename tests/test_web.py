@@ -191,6 +191,21 @@ def test_dashboard_contains_history_filters_status_and_detail_surface(tmp_path) 
     assert "下载 CSV" in response.text
 
 
+def test_dashboard_limits_history_and_displays_run_ids(tmp_path) -> None:
+    with build_client(tmp_path) as client:
+        login(client)
+        repository: RunRepository = client.app.state.repository
+        for _ in range(35):
+            run_id = repository.create_run("manual")
+            repository.finish_run(run_id, "failed", None, 0, 0, "测试失败")
+
+        response = client.get("/")
+
+    assert response.text.count("<option value=") == 30
+    assert "#35 ·" in response.text
+    assert "#5 ·" not in response.text
+
+
 def test_dashboard_translates_internal_run_status_to_chinese(tmp_path) -> None:
     with build_client(tmp_path) as client:
         login(client)

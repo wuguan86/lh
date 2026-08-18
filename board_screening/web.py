@@ -320,6 +320,7 @@ def create_app(
             "dashboard.html",
             {
                 "runs": app_repository.get_runs(
+                    limit=30,
                     strategy=selected_strategy,
                     universe=selected_universe,
                 ),

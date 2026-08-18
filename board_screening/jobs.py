@@ -206,7 +206,10 @@ class ScheduledRunService:
             validate_run_mode(strategy, universe)
         self.modes = configured_modes
 
-    def check_and_submit(self) -> int | None:
+    def check_and_submit(
+        self,
+        attempted_modes: frozenset[tuple[str, str]] = frozenset(),
+    ) -> int | None:
         try:
             latest_trade_date = self.latest_trade_date_provider()
         except Exception as exc:
@@ -215,14 +218,21 @@ class ScheduledRunService:
         for universe, strategy in self.modes:
             if self.repository.has_successful_trade_date(latest_trade_date, strategy, universe):
                 continue
+            if (universe, strategy) in attempted_modes:
+                continue
             try:
                 run_id = self.coordinator.submit("scheduled", strategy, universe)
-                # 当前策略结束后继续检查下一策略，全部完成时该回调会自然退出。
-                self.coordinator.run_after_idle(self.check_and_submit)
+                # 同一轮每个模式最多执行一次，失败后继续下一个模式，避免立即无限重试。
+                next_attempted_modes = attempted_modes | {(universe, strategy)}
+                self.coordinator.run_after_idle(
+                    lambda: self.check_and_submit(next_attempted_modes)
+                )
                 return run_id
             except RunAlreadyActive:
                 logging.info("已有筛选任务运行，将在任务空闲后补提自动筛选。")
-                self.coordinator.run_after_idle(self.check_and_submit)
+                self.coordinator.run_after_idle(
+                    lambda: self.check_and_submit(attempted_modes)
+                )
                 return None
-        logging.info("交易日 %s 的全部目标策略已有成功结果，本次不重复执行。", latest_trade_date)
+        logging.info("交易日 %s 的全部目标模式已成功或已在本轮尝试，本轮检查结束。", latest_trade_date)
         return None

@@ -280,3 +280,45 @@ def test_scheduled_service_runs_all_four_modes_in_sequence(tmp_path) -> None:
         UNIVERSE_STOCK,
     }
     coordinator.shutdown()
+
+
+def test_scheduled_service_does_not_retry_failed_mode_in_same_cycle(tmp_path) -> None:
+    repository = RunRepository(tmp_path / "screening.db")
+    repository.initialize()
+    executions: list[tuple[str, str]] = []
+    modes = (
+        (UNIVERSE_STOCK, STRATEGY_EQUAL_DECLINE),
+        (UNIVERSE_STOCK, STRATEGY_MACD_DIVERGENCE),
+    )
+
+    def fail_equal_decline() -> ScreeningOutput:
+        executions.append(modes[0])
+        raise RuntimeError("市值快照失败")
+
+    def succeed_divergence() -> ScreeningOutput:
+        executions.append(modes[1])
+        return ScreeningOutput(records=(), warnings=(), latest_trade_date="2026-07-24")
+
+    coordinator = RunCoordinator(
+        repository,
+        fail_equal_decline,
+        lambda _: None,
+        mode_screeners={
+            modes[0]: fail_equal_decline,
+            modes[1]: succeed_divergence,
+        },
+    )
+    service = ScheduledRunService(
+        repository,
+        coordinator,
+        lambda: "2026-07-24",
+        modes=modes,
+    )
+
+    service.check_and_submit()
+    coordinator.wait_for_idle(timeout=5)
+
+    assert executions == list(modes)
+    assert len(repository.get_runs()) == 2
+    assert [run["status"] for run in repository.get_runs()] == ["succeeded", "failed"]
+    coordinator.shutdown()
