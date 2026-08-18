@@ -171,6 +171,22 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .workspace-heading h1 { margin: 0; font-size: 28px; line-height: 1.15; }
 .command-group { display: flex; gap: 10px; }
 
+.run-alert {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  margin: -6px 0 18px;
+  padding: 11px 13px;
+  border-left: 3px solid var(--accent);
+  background: #fff5f3;
+  color: #7c3028;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.run-alert strong { white-space: nowrap; }
+.run-alert span { overflow-wrap: anywhere; }
+
 .primary-button, .secondary-button {
   min-height: 40px;
   display: inline-flex;
@@ -359,6 +375,7 @@ thead .sticky-column { z-index: 3; background: #eceeea; }
   .status-item { padding: 0 12px; }
   .status-item:nth-child(3) { padding-left: 0; border-left: 0; }
   .workspace-heading { align-items: flex-start; flex-direction: column; }
+  .run-alert { grid-template-columns: 1fr; gap: 3px; }
   .command-group { width: 100%; }
   .command-group > * { flex: 1; }
   .toolbar { grid-template-columns: 1fr; gap: 14px; }

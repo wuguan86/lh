@@ -12,10 +12,17 @@ from board_screening.web import create_app
 
 
 class FakeCoordinator:
-    def __init__(self, reject: bool = False, active_run_id: int | None = None) -> None:
+    def __init__(
+        self,
+        reject: bool = False,
+        active_run_id: int | None = None,
+        active_strategy: str | None = None,
+        active_universe: str | None = None,
+    ) -> None:
         self.reject = reject
         self.active_run_id = active_run_id
-        self.active_strategy = None
+        self.active_strategy = active_strategy
+        self.active_universe = active_universe
         self.submitted_strategy = None
         self.submitted_universe = None
 
@@ -240,11 +247,48 @@ def test_dashboard_keeps_last_successful_results_after_latest_failure(tmp_path) 
 
 
 def test_dashboard_exposes_active_run_for_automatic_polling(tmp_path) -> None:
-    with build_client(tmp_path, FakeCoordinator(active_run_id=77)) as client:
+    coordinator = FakeCoordinator(
+        active_run_id=77,
+        active_strategy="equal_decline",
+        active_universe="board",
+    )
+    with build_client(tmp_path, coordinator) as client:
         login(client)
         response = client.get("/")
 
     assert 'data-active-run-id="77"' in response.text
+
+
+def test_dashboard_does_not_show_other_mode_as_active(tmp_path) -> None:
+    coordinator = FakeCoordinator(
+        active_run_id=88,
+        active_strategy=STRATEGY_MACD_DIVERGENCE,
+        active_universe=UNIVERSE_STOCK,
+    )
+    with build_client(tmp_path, coordinator) as client:
+        login(client)
+        response = client.get("/?strategy=equal_decline&universe=stock")
+
+    assert 'data-active-run-id=""' in response.text
+    assert '<span class="run-label">立即执行</span>' in response.text
+    assert '<span class="run-label">执行中</span>' not in response.text
+
+
+def test_failed_run_shows_reason_and_disables_empty_csv(tmp_path) -> None:
+    with build_client(tmp_path) as client:
+        login(client)
+        repository: RunRepository = client.app.state.repository
+        run_id = repository.create_run("manual", universe=UNIVERSE_STOCK)
+        repository.finish_run(run_id, "failed", None, 0, 0, "市值快照连接失败")
+
+        response = client.get(f"/?run_id={run_id}")
+
+    assert "运行失败" in response.text
+    assert "最近一次运行失败" in response.text
+    assert "市值快照连接失败" in response.text
+    assert 'id="download-csv"' not in response.text
+    assert 'aria-disabled="true"' in response.text
+    assert '<span class="run-label">立即执行</span>' in response.text
 
 
 def test_run_detail_api_and_unknown_result_run_contract(tmp_path) -> None:

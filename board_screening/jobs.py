@@ -61,6 +61,7 @@ class RunCoordinator:
         self._is_submitting = False
         self._active_run_id: int | None = None
         self._active_strategy: str | None = None
+        self._active_universe: str | None = None
         self._future: Future[None] | None = None
         self._idle_callbacks: list[Callable[[], None]] = []
 
@@ -73,6 +74,11 @@ class RunCoordinator:
     def active_strategy(self) -> str | None:
         with self._state_lock:
             return self._active_strategy
+
+    @property
+    def active_universe(self) -> str | None:
+        with self._state_lock:
+            return self._active_universe
 
     def submit(
         self,
@@ -99,6 +105,7 @@ class RunCoordinator:
             with self._idle_condition:
                 self._active_run_id = run_id
                 self._active_strategy = strategy
+                self._active_universe = universe
                 self._is_submitting = False
             self._future = self._executor.submit(self._execute, run_id, strategy, universe)
             return run_id
@@ -109,6 +116,7 @@ class RunCoordinator:
                 self._is_submitting = False
                 self._active_run_id = None
                 self._active_strategy = None
+                self._active_universe = None
                 idle_callbacks = list(self._idle_callbacks)
                 self._idle_callbacks.clear()
                 self._idle_condition.notify_all()
@@ -144,6 +152,7 @@ class RunCoordinator:
             with self._idle_condition:
                 self._active_run_id = None
                 self._active_strategy = None
+                self._active_universe = None
                 idle_callbacks = list(self._idle_callbacks)
                 self._idle_callbacks.clear()
             for callback in idle_callbacks:

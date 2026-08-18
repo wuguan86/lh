@@ -82,11 +82,15 @@ def test_coordinator_rejects_overlapping_run(tmp_path) -> None:
     coordinator = RunCoordinator(repository, blocking_screening, lambda _: None)
     coordinator.submit("manual")
 
+    assert coordinator.active_strategy == STRATEGY_EQUAL_DECLINE
+    assert coordinator.active_universe == UNIVERSE_BOARD
+
     with pytest.raises(RunAlreadyActive):
         coordinator.submit("manual")
 
     release.set()
     coordinator.wait_for_idle(timeout=2)
+    assert coordinator.active_universe is None
     coordinator.shutdown()
 
 

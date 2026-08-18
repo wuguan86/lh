@@ -293,6 +293,28 @@ def create_app(
             else:
                 selected_run = latest_run
         results = app_repository.get_results(int(selected_run["id"])) if selected_run else []
+        active_run_id = app_coordinator.active_run_id
+        active_strategy = getattr(app_coordinator, "active_strategy", None)
+        active_universe = getattr(app_coordinator, "active_universe", None)
+        is_selected_mode_active = bool(
+            active_run_id
+            and active_strategy == selected_strategy
+            and active_universe == selected_universe
+        )
+        selected_status = str(selected_run["status"]) if selected_run else ""
+        if selected_run and selected_run.get("latest_trade_date"):
+            heading_text = str(selected_run["latest_trade_date"])
+        elif selected_status == "failed":
+            heading_text = "运行失败"
+        elif selected_status == "running":
+            heading_text = "任务执行中"
+        elif selected_status == "queued":
+            heading_text = "等待执行"
+        else:
+            heading_text = "等待首次运行"
+        failure_message = ""
+        if status_run and status_run["status"] == "failed":
+            failure_message = str(status_run.get("error_message") or "运行失败，未返回具体原因")
         return templates.TemplateResponse(
             request,
             "dashboard.html",
@@ -304,13 +326,15 @@ def create_app(
                 "selected_run": selected_run,
                 "status_run": status_run,
                 "results": results,
-                "active_run_id": app_coordinator.active_run_id,
-                "active_strategy": getattr(app_coordinator, "active_strategy", None),
+                "active_run_id": active_run_id if is_selected_mode_active else None,
+                "is_selected_mode_active": is_selected_mode_active,
                 "selected_strategy": selected_strategy,
                 "selected_universe": selected_universe,
                 "selected_mode_label": RUN_MODE_LABELS[(selected_universe, selected_strategy)],
                 "run_mode_labels": RUN_MODE_LABELS,
                 "is_stock": selected_universe == UNIVERSE_STOCK,
+                "heading_text": heading_text,
+                "failure_message": failure_message,
                 "csrf_token": request.session["csrf_token"],
                 "status_labels": RUN_STATUS_LABELS,
             },

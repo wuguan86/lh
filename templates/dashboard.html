@@ -63,10 +63,10 @@
         <p class="eyebrow">
           {{ selected_mode_label }}筛选结果{% if is_stock %} · 沪深 A 股 / 总市值 &gt; 300 亿元{% endif %}
         </p>
-        <h1>{{ selected_run['latest_trade_date'] if selected_run and selected_run['latest_trade_date'] else '等待首次运行' }}</h1>
+        <h1>{{ heading_text }}</h1>
       </div>
       <div class="command-group">
-        {% if selected_run %}
+        {% if selected_run and selected_run['status'] in ['succeeded', 'succeeded_with_warnings'] %}
           <a class="secondary-button" href="/api/runs/{{ selected_run['id'] }}/csv" id="download-csv">
             <span aria-hidden="true">↓</span> 下载 CSV
           </a>
@@ -76,12 +76,19 @@
         <button class="primary-button" id="run-now" type="button"
                 data-strategy="{{ selected_strategy }}"
                 data-universe="{{ selected_universe }}"
-                data-active-run-id="{{ active_run_id or '' }}" {% if active_run_id %}disabled{% endif %}>
+                data-active-run-id="{{ active_run_id or '' }}" {% if is_selected_mode_active %}disabled{% endif %}>
           <span aria-hidden="true">▶</span>
-          <span class="run-label">{{ '执行中' if active_run_id else '立即执行' }}</span>
+          <span class="run-label">{{ '执行中' if is_selected_mode_active else '立即执行' }}</span>
         </button>
       </div>
     </section>
+
+    {% if failure_message %}
+    <section class="run-alert" role="alert" aria-label="运行失败原因">
+      <strong>最近一次运行失败</strong>
+      <span>{{ failure_message }}</span>
+    </section>
+    {% endif %}
 
     <section class="toolbar {% if selected_strategy == 'macd_bottom_divergence' %}toolbar--divergence{% endif %} {% if is_stock %}toolbar--stock{% endif %}" aria-label="结果筛选">
       <label class="select-field" for="run-history">
