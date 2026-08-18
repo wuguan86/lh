@@ -7,7 +7,13 @@ import pytest
 from board_screening.jobs import RunAlreadyActive, RunCoordinator, ScheduledRunService
 from board_screening.models import ScreeningOutput
 from board_screening.storage import RunRepository
-from board_screening.strategies import STRATEGY_MACD_DIVERGENCE
+from board_screening.strategies import (
+    STRATEGY_EQUAL_DECLINE,
+    STRATEGY_MACD_DIVERGENCE,
+    SUPPORTED_RUN_MODES,
+    UNIVERSE_BOARD,
+    UNIVERSE_STOCK,
+)
 
 
 def test_coordinator_persists_success_and_writes_latest_csv(tmp_path) -> None:
@@ -232,4 +238,41 @@ def test_scheduled_service_runs_both_strategies_in_sequence(tmp_path) -> None:
     assert first_run_id is not None
     assert executions == ["equal_decline", STRATEGY_MACD_DIVERGENCE]
     assert len(repository.get_runs()) == 2
+    coordinator.shutdown()
+
+
+def test_scheduled_service_runs_all_four_modes_in_sequence(tmp_path) -> None:
+    repository = RunRepository(tmp_path / "screening.db")
+    repository.initialize()
+    executions: list[tuple[str, str]] = []
+
+    def output_for(universe: str, strategy: str):
+        def execute() -> ScreeningOutput:
+            executions.append((universe, strategy))
+            return ScreeningOutput(records=(), warnings=(), latest_trade_date="2026-07-24")
+
+        return execute
+
+    coordinator = RunCoordinator(
+        repository,
+        output_for(UNIVERSE_BOARD, STRATEGY_EQUAL_DECLINE),
+        lambda _: None,
+        mode_screeners={mode: output_for(*mode) for mode in SUPPORTED_RUN_MODES},
+    )
+    service = ScheduledRunService(
+        repository,
+        coordinator,
+        lambda: "2026-07-24",
+        modes=SUPPORTED_RUN_MODES,
+    )
+
+    service.check_and_submit()
+    coordinator.wait_for_idle(timeout=5)
+
+    assert executions == list(SUPPORTED_RUN_MODES)
+    assert len(repository.get_runs()) == 4
+    assert {run["universe"] for run in repository.get_runs()} == {
+        UNIVERSE_BOARD,
+        UNIVERSE_STOCK,
+    }
     coordinator.shutdown()

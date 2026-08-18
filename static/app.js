@@ -2,6 +2,8 @@ const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || 
 const runButton = document.querySelector('#run-now');
 const toast = document.querySelector('#toast');
 const selectedStrategy = runButton?.dataset.strategy || 'equal_decline';
+const selectedUniverse = runButton?.dataset.universe || 'board';
+const isStockUniverse = selectedUniverse === 'stock';
 
 function showToast(message) {
   if (!toast) return;
@@ -21,7 +23,7 @@ async function startRun() {
         'Content-Type': 'application/json',
         'X-CSRF-Token': csrfToken,
       },
-      body: JSON.stringify({ strategy: selectedStrategy }),
+      body: JSON.stringify({ strategy: selectedStrategy, universe: selectedUniverse }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || '任务提交失败');
@@ -59,13 +61,15 @@ runButton?.addEventListener('click', startRun);
 
 document.querySelector('#run-history')?.addEventListener('change', (event) => {
   if (event.target.value) {
-    window.location.assign(`/?strategy=${selectedStrategy}&run_id=${event.target.value}`);
+    window.location.assign(
+      `/?strategy=${selectedStrategy}&universe=${selectedUniverse}&run_id=${event.target.value}`,
+    );
   }
 });
 
 let selectedBoardType = '';
 let selectedTimeframe = '';
-const searchInput = document.querySelector('#board-search');
+const searchInput = document.querySelector('#target-search, #board-search');
 const categoryFilter = document.querySelector('#category-filter');
 const rows = [...document.querySelectorAll('.result-row')];
 
@@ -75,7 +79,7 @@ function filterRows() {
   let visibleCount = 0;
   rows.forEach((row) => {
     const matchesType = !selectedBoardType || row.dataset.boardType === selectedBoardType;
-    const matchesSearch = !query || row.dataset.boardName.toLowerCase().includes(query);
+    const matchesSearch = !query || row.dataset.targetName.toLowerCase().includes(query);
     const matchesTimeframe = !selectedTimeframe || row.dataset.timeframe === selectedTimeframe;
     const matchesCategory = !selectedCategory || (row.dataset.category || '').includes(selectedCategory);
     const visible = matchesType && matchesSearch && matchesTimeframe && matchesCategory;
@@ -132,20 +136,24 @@ document.querySelectorAll('.sort-button').forEach((button) => {
 const detailDialog = document.querySelector('#result-detail');
 const detailTitle = document.querySelector('#detail-title');
 const detailContent = document.querySelector('#detail-content');
+const identityDetailFields = isStockUniverse
+  ? ['股票代码', '股票名称', '总市值（亿元）']
+  : ['板块类型'];
+const relatedEtfDetailFields = isStockUniverse ? [] : ['关联ETF代码', '关联ETF名称'];
 const equalDeclineDetailFields = [
-  '板块类型', '最新交易日', '当前价格', '1:1等距目标价', '1.272扩展目标价',
+  ...identityDetailFields, '最新交易日', '当前价格', '1:1等距目标价', '1.272扩展目标价',
   '1.618扩展目标价', '目标偏离率', '最大跌幅',
   '首次跌破目标日期', '跌破目标后最低价', '最低价日期', '支撑位', '最高点价格',
   '上涨幅度', '跌破日期', '统计天数', '下跌天数占比', '反弹天数', '20日乖离率',
-  '最高点日期', '起涨点日期', '关联ETF代码', '关联ETF名称',
+  '最高点日期', '起涨点日期', ...relatedEtfDetailFields,
 ];
 const divergenceDetailFields = [
-  '板块类型', '周期', '背离分类', '背离次数', '最新交易日', '当前价格',
+  ...identityDetailFields, '周期', '背离分类', '背离次数', '最新交易日', '当前价格',
   '第一低点日期', '第一低点价格', '第二低点日期', '第二低点价格',
   '价格创新低幅度', '价格反弹幅度', '第一DIF低点日期', '第一DIF低点',
   '第二DIF低点日期', '第二DIF低点', 'DIF抬高幅度', 'DIF回升幅度',
   '第一段绿柱面积', '第二段绿柱面积', '绿柱面积缩小率',
-  '当前MACD柱', '当前柱状态', '低点链', '关联ETF代码', '关联ETF名称',
+  '当前MACD柱', '当前柱状态', '低点链', ...relatedEtfDetailFields,
 ];
 const detailFieldLabels = {
   '目标偏离率': '1:1目标偏离率',
@@ -159,9 +167,8 @@ function openDetail(row) {
   if (!result['1:1等距目标价'] && result['目标位价格']) {
     result['1:1等距目标价'] = result['目标位价格'];
   }
-  detailTitle.textContent = result['周期']
-    ? `${result['板块名称']} · ${result['周期']}`
-    : result['板块名称'];
+  const targetName = result['股票名称'] || result['板块名称'];
+  detailTitle.textContent = result['周期'] ? `${targetName} · ${result['周期']}` : targetName;
   detailContent.replaceChildren();
   const grid = document.createElement('div');
   grid.className = 'detail-grid';

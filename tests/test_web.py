@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from board_screening.config import Settings
 from board_screening.jobs import RunAlreadyActive
 from board_screening.storage import RunRepository
-from board_screening.strategies import STRATEGY_MACD_DIVERGENCE
+from board_screening.strategies import STRATEGY_MACD_DIVERGENCE, UNIVERSE_STOCK
 from board_screening.web import create_app
 
 
@@ -17,12 +17,19 @@ class FakeCoordinator:
         self.active_run_id = active_run_id
         self.active_strategy = None
         self.submitted_strategy = None
+        self.submitted_universe = None
 
-    def submit(self, trigger_type: str, strategy: str = "equal_decline") -> int:
+    def submit(
+        self,
+        trigger_type: str,
+        strategy: str = "equal_decline",
+        universe: str = "board",
+    ) -> int:
         if self.reject:
             raise RunAlreadyActive("已有筛选任务正在执行")
         assert trigger_type == "manual"
         self.submitted_strategy = strategy
+        self.submitted_universe = universe
         return 42
 
     def shutdown(self) -> None:
@@ -304,3 +311,58 @@ def test_divergence_csv_uses_diagnostic_columns(tmp_path) -> None:
     header = response.content.decode("utf-8-sig").splitlines()[0]
     assert "筛选策略,板块类型,板块名称,周期,背离分类,背离次数" in header
     assert "1:1等距目标价" not in header
+
+
+def test_dashboard_exposes_two_independent_stock_entries(tmp_path) -> None:
+    with build_client(tmp_path) as client:
+        login(client)
+        response = client.get("/?strategy=equal_decline&universe=stock")
+
+    assert "个股等距下跌" in response.text
+    assert "个股MACD底背离" in response.text
+    assert "沪深 A 股 / 总市值 &gt; 300 亿元" in response.text
+    assert "股票名称或代码" in response.text
+    assert 'id="board-type-filter"' not in response.text
+    assert 'data-sort-key="marketCap"' in response.text
+
+
+def test_manual_run_accepts_stock_universe(tmp_path) -> None:
+    coordinator = FakeCoordinator()
+    with build_client(tmp_path, coordinator) as client:
+        csrf_token = login(client)
+        response = client.post(
+            "/api/runs",
+            headers={"X-CSRF-Token": csrf_token},
+            json={"strategy": "equal_decline", "universe": UNIVERSE_STOCK},
+        )
+
+    assert response.status_code == 202
+    assert coordinator.submitted_strategy == "equal_decline"
+    assert coordinator.submitted_universe == UNIVERSE_STOCK
+
+
+def test_stock_csv_uses_stock_identity_and_market_cap(tmp_path) -> None:
+    with build_client(tmp_path) as client:
+        login(client)
+        repository: RunRepository = client.app.state.repository
+        run_id = repository.create_run("manual", universe=UNIVERSE_STOCK)
+        repository.save_results(
+            run_id,
+            [
+                {
+                    "股票代码": "600001",
+                    "股票名称": "测试股票",
+                    "总市值（亿元）": 501.0,
+                    "最新交易日": "2026-07-24",
+                    "当前价格": 95.0,
+                    "1:1等距目标价": 100.0,
+                    "目标偏离率": "5.00%",
+                }
+            ],
+        )
+        response = client.get(f"/api/runs/{run_id}/csv")
+
+    header = response.content.decode("utf-8-sig").splitlines()[0]
+    assert header.startswith("股票代码,股票名称,总市值（亿元）")
+    assert "板块类型" not in header
+    assert "关联ETF代码" not in header

@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import sqlite3
 
 from board_screening.storage import RunRepository
-from board_screening.strategies import STRATEGY_MACD_DIVERGENCE
+from board_screening.strategies import STRATEGY_MACD_DIVERGENCE, UNIVERSE_STOCK
 
 
 def _sample_record() -> dict[str, object]:
@@ -166,3 +166,32 @@ def test_repository_isolates_success_and_results_by_strategy(tmp_path) -> None:
     assert repository.has_successful_trade_date("2026-07-24", STRATEGY_MACD_DIVERGENCE)
     assert not repository.has_successful_trade_date("2026-07-24")
     assert repository.get_runs(strategy=STRATEGY_MACD_DIVERGENCE)[0]["id"] == run_id
+
+
+def test_repository_isolates_stock_runs_and_persists_stock_identity(tmp_path) -> None:
+    repository = RunRepository(tmp_path / "screening.db")
+    repository.initialize()
+    run_id = repository.create_run("scheduled", universe=UNIVERSE_STOCK)
+    repository.save_results(
+        run_id,
+        [
+            {
+                "股票代码": "600001",
+                "股票名称": "测试股票",
+                "总市值（亿元）": 501.0,
+                "最新交易日": "2026-07-24",
+                "当前价格": 95.0,
+                "1:1等距目标价": 100.0,
+                "目标偏离率": "5.00%",
+            }
+        ],
+    )
+    repository.finish_run(run_id, "succeeded", "2026-07-24", 1, 0)
+
+    assert repository.get_results(run_id)[0]["股票代码"] == "600001"
+    assert repository.get_latest_successful_run(universe=UNIVERSE_STOCK)["id"] == run_id
+    assert repository.get_latest_successful_run() is None
+    assert repository.has_successful_trade_date(
+        "2026-07-24",
+        universe=UNIVERSE_STOCK,
+    )

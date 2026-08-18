@@ -8,14 +8,14 @@
   <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
   <script src="{{ url_for('static', path='/app.js') }}" defer></script>
 </head>
-<body class="app-page" data-strategy="{{ selected_strategy }}">
+<body class="app-page" data-strategy="{{ selected_strategy }}" data-universe="{{ selected_universe }}">
   <header class="app-header">
     <div class="app-header__inner">
-      <a class="brand-lockup" href="/?strategy={{ selected_strategy }}" aria-label="返回最新监测结果">
+      <a class="brand-lockup" href="/?strategy={{ selected_strategy }}&universe={{ selected_universe }}" aria-label="返回最新监测结果">
         <span class="brand-mark" aria-hidden="true">形</span>
         <span>
           <strong>板块形态监测</strong>
-          <small>A 股行业与概念板块</small>
+          <small>A 股板块与大市值个股</small>
         </span>
       </a>
       <button class="icon-button" id="logout-button" type="button" title="退出登录" aria-label="退出登录">
@@ -39,7 +39,7 @@
         <strong>{{ status_run['latest_trade_date'] or '—' if status_run else '—' }}</strong>
       </div>
       <div class="status-item">
-        <span>命中板块</span>
+        <span>命中{{ '个股' if is_stock else '板块' }}</span>
         <strong>{{ status_run['matched_count'] if status_run else 0 }}</strong>
       </div>
       <div class="status-item">
@@ -51,15 +51,18 @@
 
   <main class="workspace">
     <nav class="strategy-switcher" aria-label="筛选策略">
-      {% for strategy_key, strategy_label in strategy_labels.items() %}
-        <a href="/?strategy={{ strategy_key }}" {% if strategy_key == selected_strategy %}aria-current="page"{% endif %}>
-          {{ strategy_label }}
+      {% for mode, mode_label in run_mode_labels.items() %}
+        <a href="/?strategy={{ mode[1] }}&universe={{ mode[0] }}"
+           {% if mode[1] == selected_strategy and mode[0] == selected_universe %}aria-current="page"{% endif %}>
+          {{ mode_label }}
         </a>
       {% endfor %}
     </nav>
     <section class="workspace-heading">
       <div>
-        <p class="eyebrow">{{ strategy_labels[selected_strategy] }}筛选结果</p>
+        <p class="eyebrow">
+          {{ selected_mode_label }}筛选结果{% if is_stock %} · 沪深 A 股 / 总市值 &gt; 300 亿元{% endif %}
+        </p>
         <h1>{{ selected_run['latest_trade_date'] if selected_run and selected_run['latest_trade_date'] else '等待首次运行' }}</h1>
       </div>
       <div class="command-group">
@@ -72,6 +75,7 @@
         {% endif %}
         <button class="primary-button" id="run-now" type="button"
                 data-strategy="{{ selected_strategy }}"
+                data-universe="{{ selected_universe }}"
                 data-active-run-id="{{ active_run_id or '' }}" {% if active_run_id %}disabled{% endif %}>
           <span aria-hidden="true">▶</span>
           <span class="run-label">{{ '执行中' if active_run_id else '立即执行' }}</span>
@@ -79,7 +83,7 @@
       </div>
     </section>
 
-    <section class="toolbar {% if selected_strategy == 'macd_bottom_divergence' %}toolbar--divergence{% endif %}" aria-label="结果筛选">
+    <section class="toolbar {% if selected_strategy == 'macd_bottom_divergence' %}toolbar--divergence{% endif %} {% if is_stock %}toolbar--stock{% endif %}" aria-label="结果筛选">
       <label class="select-field" for="run-history">
         <span>历史运行</span>
         <select id="run-history">
@@ -91,6 +95,7 @@
           {% endfor %}
         </select>
       </label>
+      {% if not is_stock %}
       <div class="filter-field">
         <span>板块类型</span>
         <div class="segmented-control" id="board-type-filter" role="group" aria-label="板块类型">
@@ -99,6 +104,7 @@
           <button type="button" data-board-type="概念" aria-pressed="false">概念</button>
         </div>
       </div>
+      {% endif %}
       {% if selected_strategy == 'macd_bottom_divergence' %}
       <div class="filter-field">
         <span>周期</span>
@@ -121,8 +127,8 @@
       </label>
       {% endif %}
       <label class="search-field" for="board-search">
-        <span>板块名称</span>
-        <input id="board-search" type="search" placeholder="搜索板块" autocomplete="off">
+        <span>{{ '股票名称或代码' if is_stock else '板块名称' }}</span>
+        <input id="board-search" type="search" placeholder="{{ '搜索股票' if is_stock else '搜索板块' }}" autocomplete="off">
       </label>
     </section>
 
@@ -136,9 +142,10 @@
         <table class="results-table">
           <thead>
             <tr>
-              <th class="sticky-column">板块</th>
+              <th class="sticky-column">{{ '个股' if is_stock else '板块' }}</th>
               <th>最新交易日</th>
               <th><button class="sort-button" type="button" data-sort-key="currentPrice">当前价格 <span>↕</span></button></th>
+              {% if is_stock %}<th><button class="sort-button" type="button" data-sort-key="marketCap">总市值（亿元） <span>↕</span></button></th>{% endif %}
               <th><button class="sort-button" type="button" data-sort-key="targetPrice">1:1 等距 <span>↕</span></button></th>
               <th><button class="sort-button" type="button" data-sort-key="extension1272">1.272 扩展 <span>↕</span></button></th>
               <th><button class="sort-button" type="button" data-sort-key="extension1618">1.618 扩展 <span>↕</span></button></th>
@@ -150,14 +157,15 @@
               <th><button class="sort-button" type="button" data-sort-key="maxDrawdown">1:1 后最大跌幅 <span>↕</span></button></th>
               <th><button class="sort-button" type="button" data-sort-key="downRatio">下跌占比 <span>↕</span></button></th>
               <th><button class="sort-button" type="button" data-sort-key="latestBias">20 日乖离率 <span>↕</span></button></th>
-              <th>关联 ETF</th>
+              {% if not is_stock %}<th>关联 ETF</th>{% endif %}
             </tr>
           </thead>
           <tbody id="results-body">
           {% for result in results %}
             <tr class="result-row" tabindex="0"
-                data-board-type="{{ result['板块类型'] }}"
-                data-board-name="{{ result['板块名称'] }}"
+                data-board-type="{{ result.get('板块类型', '个股') }}"
+                data-target-name="{{ (result.get('股票代码', '') ~ ' ' ~ result.get('股票名称', '')) if is_stock else result.get('板块名称', '') }}"
+                data-market-cap="{{ result.get('总市值（亿元）', '') }}"
                 data-current-price="{{ result.get('当前价格', '') }}"
                 data-target-price="{{ result.get('1:1等距目标价', result.get('目标位价格', '')) }}"
                 data-extension1272="{{ result.get('1.272扩展目标价', '') }}"
@@ -171,11 +179,12 @@
                 data-latest-bias="{{ result.get('20日乖离率', '') }}"
                 data-details="{{ result | tojson | forceescape }}">
               <td class="sticky-column board-cell">
-                <strong>{{ result['板块名称'] }}</strong>
-                <span>{{ result['板块类型'] }}</span>
+                <strong>{{ result.get('股票名称') if is_stock else result.get('板块名称') }}</strong>
+                <span>{{ result.get('股票代码') if is_stock else result.get('板块类型') }}</span>
               </td>
               <td class="numeric-cell">{{ result.get('最新交易日', '—') }}</td>
               <td class="numeric-cell">{{ result.get('当前价格', '—') }}</td>
+              {% if is_stock %}<td class="numeric-cell">{{ result.get('总市值（亿元）', '—') }}</td>{% endif %}
               <td class="numeric-cell">{{ result.get('1:1等距目标价', result.get('目标位价格', '—')) }}</td>
               <td class="numeric-cell">{{ result.get('1.272扩展目标价') or '—' }}</td>
               <td class="numeric-cell">{{ result.get('1.618扩展目标价') or '—' }}</td>
@@ -195,12 +204,12 @@
               <td class="numeric-cell">{{ result.get('最大跌幅') or '未跌破' }}</td>
               <td class="numeric-cell">{{ result.get('下跌天数占比', '—') }}</td>
               <td class="numeric-cell">{{ result.get('20日乖离率', '—') }}</td>
-              <td class="truncate-cell" title="{{ result.get('关联ETF代码', '') }} {{ result.get('关联ETF名称', '') }}">
+              {% if not is_stock %}<td class="truncate-cell" title="{{ result.get('关联ETF代码', '') }} {{ result.get('关联ETF名称', '') }}">
                 {% if result.get('关联ETF代码') %}{{ result.get('关联ETF代码') }} {{ result.get('关联ETF名称') }}{% else %}<span class="muted">数据暂缺</span>{% endif %}
-              </td>
+              </td>{% endif %}
             </tr>
           {% else %}
-            <tr class="empty-row"><td colspan="15">当前运行没有命中板块</td></tr>
+            <tr class="empty-row"><td colspan="15">当前运行没有命中{{ '个股' if is_stock else '板块' }}</td></tr>
           {% endfor %}
           </tbody>
         </table>
@@ -208,35 +217,37 @@
         <table class="results-table divergence-table">
           <thead>
             <tr>
-              <th class="sticky-column">板块</th>
+              <th class="sticky-column">{{ '个股' if is_stock else '板块' }}</th>
               <th>周期</th>
               <th>背离分类</th>
               <th>第二低点</th>
               <th><button class="sort-button" type="button" data-sort-key="currentPrice">当前价格 <span>↕</span></button></th>
+              {% if is_stock %}<th><button class="sort-button" type="button" data-sort-key="marketCap">总市值（亿元） <span>↕</span></button></th>{% endif %}
               <th>价格低点</th>
               <th><button class="sort-button" type="button" data-sort-key="priceDrop">创新低 <span>↕</span></button></th>
               <th>DIF 低点</th>
               <th><button class="sort-button" type="button" data-sort-key="difLift">DIF 抬高 <span>↕</span></button></th>
               <th><button class="sort-button" type="button" data-sort-key="rebound">价格反弹 <span>↕</span></button></th>
               <th>当前柱</th>
-              <th>关联 ETF</th>
+              {% if not is_stock %}<th>关联 ETF</th>{% endif %}
             </tr>
           </thead>
           <tbody id="results-body">
           {% for result in results %}
             <tr class="result-row" tabindex="0"
-                data-board-type="{{ result['板块类型'] }}"
-                data-board-name="{{ result['板块名称'] }}"
+                data-board-type="{{ result.get('板块类型', '个股') }}"
+                data-target-name="{{ (result.get('股票代码', '') ~ ' ' ~ result.get('股票名称', '')) if is_stock else result.get('板块名称', '') }}"
                 data-timeframe="{{ result.get('周期', '') }}"
                 data-category="{{ result.get('背离分类', '') }}"
                 data-current-price="{{ result.get('当前价格', '') }}"
+                data-market-cap="{{ result.get('总市值（亿元）', '') }}"
                 data-price-drop="{{ result.get('价格创新低幅度', '') }}"
                 data-dif-lift="{{ result.get('DIF抬高幅度', '') }}"
                 data-rebound="{{ result.get('价格反弹幅度', '') }}"
                 data-details="{{ result | tojson | forceescape }}">
               <td class="sticky-column board-cell">
-                <strong>{{ result['板块名称'] }}</strong>
-                <span>{{ result['板块类型'] }}</span>
+                <strong>{{ result.get('股票名称') if is_stock else result.get('板块名称') }}</strong>
+                <span>{{ result.get('股票代码') if is_stock else result.get('板块类型') }}</span>
               </td>
               <td><span class="timeframe-tag">{{ result.get('周期', '—') }}</span></td>
               <td class="category-cell">
@@ -246,18 +257,19 @@
               </td>
               <td class="numeric-cell">{{ result.get('第二低点日期', '—') }}</td>
               <td class="numeric-cell">{{ result.get('当前价格', '—') }}</td>
+              {% if is_stock %}<td class="numeric-cell">{{ result.get('总市值（亿元）', '—') }}</td>{% endif %}
               <td class="numeric-cell">{{ result.get('第一低点价格', '—') }} → {{ result.get('第二低点价格', '—') }}</td>
               <td class="numeric-cell">{{ result.get('价格创新低幅度', '—') }}</td>
               <td class="numeric-cell">{{ result.get('第一DIF低点', '—') }} → {{ result.get('第二DIF低点', '—') }}</td>
               <td class="numeric-cell is-positive">{{ result.get('DIF抬高幅度', '—') }}</td>
               <td class="numeric-cell">{{ result.get('价格反弹幅度', '—') }}</td>
               <td><span class="histogram-state histogram-state--{{ 'red' if result.get('当前柱状态') == '红柱' else 'green' }}">{{ result.get('当前柱状态', '—') }}</span></td>
-              <td class="truncate-cell" title="{{ result.get('关联ETF代码', '') }} {{ result.get('关联ETF名称', '') }}">
+              {% if not is_stock %}<td class="truncate-cell" title="{{ result.get('关联ETF代码', '') }} {{ result.get('关联ETF名称', '') }}">
                 {% if result.get('关联ETF代码') %}{{ result.get('关联ETF代码') }} {{ result.get('关联ETF名称') }}{% else %}<span class="muted">数据暂缺</span>{% endif %}
-              </td>
+              </td>{% endif %}
             </tr>
           {% else %}
-            <tr class="empty-row"><td colspan="12">当前运行没有命中底背离板块</td></tr>
+            <tr class="empty-row"><td colspan="12">当前运行没有命中底背离{{ '个股' if is_stock else '板块' }}</td></tr>
           {% endfor %}
           </tbody>
         </table>
@@ -269,7 +281,7 @@
   <dialog class="detail-dialog" id="result-detail">
     <div class="detail-header">
       <div>
-        <p class="eyebrow">板块详情</p>
+        <p class="eyebrow">{{ '个股' if is_stock else '板块' }}详情</p>
         <h2 id="detail-title">—</h2>
       </div>
       <button class="icon-button" id="detail-close" type="button" aria-label="关闭详情" title="关闭详情">×</button>

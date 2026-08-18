@@ -9,7 +9,13 @@ from pathlib import Path
 from typing import Iterable
 
 from board_screening.core import normalize_target_price_fields
-from board_screening.strategies import STRATEGY_EQUAL_DECLINE, validate_strategy
+from board_screening.strategies import (
+    STRATEGY_EQUAL_DECLINE,
+    UNIVERSE_BOARD,
+    validate_run_mode,
+    validate_strategy,
+    validate_universe,
+)
 
 
 SUCCESS_STATUSES = ("succeeded", "succeeded_with_warnings")
@@ -55,14 +61,16 @@ class RunRepository:
                     matched_count INTEGER NOT NULL DEFAULT 0,
                     warning_count INTEGER NOT NULL DEFAULT 0,
                     error_message TEXT,
-                    strategy TEXT NOT NULL DEFAULT 'equal_decline'
+                    strategy TEXT NOT NULL DEFAULT 'equal_decline',
+                    universe TEXT NOT NULL DEFAULT 'board'
                 );
 
                 CREATE TABLE IF NOT EXISTS results (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-                    board_type TEXT NOT NULL,
-                    board_name TEXT NOT NULL,
+                    target_type TEXT NOT NULL,
+                    target_code TEXT NOT NULL DEFAULT '',
+                    target_name TEXT NOT NULL,
                     latest_trade_date TEXT NOT NULL,
                     current_price REAL,
                     target_price REAL,
@@ -85,22 +93,39 @@ class RunRepository:
                 connection.execute(
                     "ALTER TABLE runs ADD COLUMN strategy TEXT NOT NULL DEFAULT 'equal_decline'"
                 )
+            if "universe" not in run_columns:
+                # 旧任务全部来自板块筛选，迁移时保持原有范围。
+                connection.execute(
+                    "ALTER TABLE runs ADD COLUMN universe TEXT NOT NULL DEFAULT 'board'"
+                )
+            result_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(results)").fetchall()
+            }
+            if "board_type" in result_columns and "target_type" not in result_columns:
+                connection.execute("ALTER TABLE results RENAME COLUMN board_type TO target_type")
+            if "board_name" in result_columns and "target_name" not in result_columns:
+                connection.execute("ALTER TABLE results RENAME COLUMN board_name TO target_name")
+            if "target_code" not in result_columns:
+                connection.execute(
+                    "ALTER TABLE results ADD COLUMN target_code TEXT NOT NULL DEFAULT ''"
+                )
 
     def create_run(
         self,
         trigger_type: str,
         started_at: datetime | None = None,
         strategy: str = STRATEGY_EQUAL_DECLINE,
+        universe: str = UNIVERSE_BOARD,
     ) -> int:
-        validate_strategy(strategy)
+        validate_run_mode(strategy, universe)
         started_at = started_at or _utc_now()
         with self._connect() as connection:
             cursor = connection.execute(
                 """
-                INSERT INTO runs (trigger_type, status, started_at, strategy)
-                VALUES (?, 'queued', ?, ?)
+                INSERT INTO runs (trigger_type, status, started_at, strategy, universe)
+                VALUES (?, 'queued', ?, ?, ?)
                 """,
-                (trigger_type, started_at.isoformat(), strategy),
+                (trigger_type, started_at.isoformat(), strategy, universe),
             )
             return int(cursor.lastrowid)
 
@@ -140,17 +165,26 @@ class RunRepository:
         with self._connect() as connection:
             for record in records:
                 public_record = {key: value for key, value in record.items() if not key.startswith("_")}
+                if "股票名称" in record:
+                    target_type = "个股"
+                    target_code = str(record.get("股票代码", ""))
+                    target_name = str(record["股票名称"])
+                else:
+                    target_type = str(record["板块类型"])
+                    target_code = ""
+                    target_name = str(record["板块名称"])
                 connection.execute(
                     """
                     INSERT INTO results (
-                        run_id, board_type, board_name, latest_trade_date, current_price,
+                        run_id, target_type, target_code, target_name, latest_trade_date, current_price,
                         target_price, target_deviation, max_drawdown, etf_code, etf_name, payload_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
-                        record["板块类型"],
-                        record["板块名称"],
+                        target_type,
+                        target_code,
+                        target_name,
                         record["最新交易日"],
                         record.get("当前价格"),
                         record.get("1:1等距目标价", record.get("目标位价格")),
@@ -172,6 +206,7 @@ class RunRepository:
         limit: int | None = None,
         retention_days: int = 90,
         strategy: str | None = None,
+        universe: str | None = None,
     ) -> list[dict[str, object]]:
         cutoff = (_utc_now() - timedelta(days=retention_days)).isoformat()
         sql = "SELECT * FROM runs WHERE started_at >= ?"
@@ -180,6 +215,10 @@ class RunRepository:
             validate_strategy(strategy)
             sql += " AND strategy = ?"
             parameters += (strategy,)
+        if universe is not None:
+            validate_universe(universe)
+            sql += " AND universe = ?"
+            parameters += (universe,)
         sql += " ORDER BY id DESC"
         if limit is not None:
             sql += " LIMIT ?"
@@ -188,25 +227,31 @@ class RunRepository:
             rows = connection.execute(sql, parameters).fetchall()
         return [dict(row) for row in rows]
 
-    def get_current_run(self, strategy: str | None = None) -> dict[str, object] | None:
-        runs = self.get_runs(limit=1, strategy=strategy)
+    def get_current_run(
+        self,
+        strategy: str | None = None,
+        universe: str | None = None,
+    ) -> dict[str, object] | None:
+        runs = self.get_runs(limit=1, strategy=strategy, universe=universe)
         return runs[0] if runs else None
 
     def get_latest_successful_run(
         self,
         strategy: str = STRATEGY_EQUAL_DECLINE,
+        universe: str = UNIVERSE_BOARD,
     ) -> dict[str, object] | None:
-        validate_strategy(strategy)
+        validate_run_mode(strategy, universe)
         placeholders = ",".join("?" for _ in SUCCESS_STATUSES)
         cutoff = (_utc_now() - timedelta(days=90)).isoformat()
         with self._connect() as connection:
             row = connection.execute(
                 f"""
                 SELECT * FROM runs
-                WHERE status IN ({placeholders}) AND started_at >= ? AND strategy = ?
+                WHERE status IN ({placeholders}) AND started_at >= ?
+                    AND strategy = ? AND universe = ?
                 ORDER BY id DESC LIMIT 1
                 """,
-                (*SUCCESS_STATUSES, cutoff, strategy),
+                (*SUCCESS_STATUSES, cutoff, strategy, universe),
             ).fetchone()
         return dict(row) if row else None
 
@@ -221,7 +266,7 @@ class RunRepository:
                 """
                 SELECT * FROM results
                 WHERE run_id = ?
-                ORDER BY board_type, ABS(target_deviation), board_name
+                ORDER BY target_type, ABS(target_deviation), target_name
                 """,
                 (run_id,),
             ).fetchall()
@@ -239,8 +284,9 @@ class RunRepository:
         self,
         trade_date: str,
         strategy: str = STRATEGY_EQUAL_DECLINE,
+        universe: str = UNIVERSE_BOARD,
     ) -> bool:
-        validate_strategy(strategy)
+        validate_run_mode(strategy, universe)
         placeholders = ",".join("?" for _ in SUCCESS_STATUSES)
         with self._connect() as connection:
             row = connection.execute(
@@ -248,9 +294,10 @@ class RunRepository:
                 SELECT 1 FROM runs
                 WHERE latest_trade_date = ? AND trigger_type = 'scheduled'
                     AND status IN ({placeholders}) AND strategy = ?
+                    AND universe = ?
                 LIMIT 1
                 """,
-                (trade_date, *SUCCESS_STATUSES, strategy),
+                (trade_date, *SUCCESS_STATUSES, strategy, universe),
             ).fetchone()
         return row is not None
 

@@ -38,7 +38,12 @@ from board_screening.market_data import (
     get_date_range,
     normalize_kline,
 )
-from board_screening.models import ScreeningOutput
+from board_screening.models import (
+    ScreeningOutput,
+    build_target_identity_fields,
+    get_target_name,
+    get_target_type,
+)
 from board_screening.scheduler import fetch_latest_trade_date
 from board_screening.strategies import STRATEGY_EQUAL_DECLINE, STRATEGY_MACD_DIVERGENCE
 
@@ -151,18 +156,20 @@ def calculate_latest_bias(kline_df: pd.DataFrame) -> float | None:
 
 
 def analyze_board_pattern(
-    board: BoardInfo,
+    board: object,
     kline_df: pd.DataFrame,
     min_wave_rise_rate: float = DEFAULT_MIN_WAVE_RISE_PERCENT / 100,
 ) -> dict[str, object] | None:
-    """计算等距下跌形态，满足跌破支撑、下跌流畅和乖离率条件时返回结果记录。"""
+    """计算通用标的等距下跌形态，满足全部条件时返回结果记录。"""
+    target_type = get_target_type(board)
+    target_name = get_target_name(board)
     if not math.isfinite(min_wave_rise_rate) or min_wave_rise_rate < 0:
         raise ValueError("最小上涨幅度必须是非负数")
     if len(kline_df) < LOOKBACK_TRADING_DAYS:
         logging.info(
             "【%s-%s】数据不足 %s 个交易日，当前仅 %s 条，已跳过。",
-            board.board_type,
-            board.board_name,
+            target_type,
+            target_name,
             LOOKBACK_TRADING_DAYS,
             len(kline_df),
         )
@@ -177,8 +184,8 @@ def analyze_board_pattern(
     if peak_position <= SWING_WINDOW:
         logging.info(
             "【%s-%s】最高点左侧样本不足，无法寻找前 5 天完整波谷，已跳过。",
-            board.board_type,
-            board.board_name,
+            target_type,
+            target_name,
         )
         return None
 
@@ -191,8 +198,8 @@ def analyze_board_pattern(
     if support_position is None:
         logging.info(
             "【%s-%s】最高点左侧未找到上涨幅度达到 %.2f%% 的局部低点，已跳过。",
-            board.board_type,
-            board.board_name,
+            target_type,
+            target_name,
             min_wave_rise_rate * 100,
         )
         return None
@@ -209,8 +216,8 @@ def analyze_board_pattern(
     if target_price <= 0:
         logging.info(
             "【%s-%s】目标位为非正数 %.3f，不适合按比例计算偏离率，已跳过。",
-            board.board_type,
-            board.board_name,
+            target_type,
+            target_name,
             target_price,
         )
         return None
@@ -244,8 +251,7 @@ def analyze_board_pattern(
     target_drawdown = calculate_post_target_drawdown(lookback_df, target_price, break_position)
 
     return {
-        "板块类型": board.board_type,
-        "板块名称": board.board_name,
+        **build_target_identity_fields(board),
         "最新交易日": latest_row["date"].strftime("%Y-%m-%d"),
         "当前价格": round(latest_close, 3),
         "1:1等距目标价": round(target_price, 3),

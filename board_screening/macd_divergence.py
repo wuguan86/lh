@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from board_screening.market_data import BoardInfo
+from board_screening.models import build_target_identity_fields
 
 
 MACD_FAST_PERIOD = 12
@@ -258,11 +258,11 @@ def calculate_completed_green_area(
 
 
 def analyze_macd_divergence(
-    board: BoardInfo,
+    board: object,
     timeframe: str,
     kline_frame: pd.DataFrame,
 ) -> dict[str, object] | None:
-    """分析单个板块单一周期，命中时返回可存储和导出的诊断记录。"""
+    """分析单个通用标的的单一周期，命中时返回诊断记录。"""
     if len(kline_frame) < MIN_PERIOD_ROWS:
         return None
     calculated = calculate_macd(kline_frame.reset_index(drop=True))
@@ -308,8 +308,7 @@ def analyze_macd_divergence(
     )
     return {
         "筛选策略": "MACD底背离",
-        "板块类型": board.board_type,
-        "板块名称": board.board_name,
+        **build_target_identity_fields(board),
         "周期": timeframe,
         "背离分类": "、".join(labels),
         "背离次数": divergence_count,

@@ -124,9 +124,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 
 .strategy-switcher {
-  display: inline-flex;
+  display: flex;
+  max-width: 100%;
   min-height: 40px;
   margin-bottom: 24px;
+  overflow-x: auto;
+  scrollbar-width: thin;
   border-bottom: 1px solid var(--line);
 }
 
@@ -134,6 +137,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   position: relative;
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
   padding: 0 18px;
   color: var(--ink-soft);
   font-weight: 700;
@@ -201,6 +205,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .toolbar--divergence {
   grid-template-columns: minmax(190px, 1fr) auto auto minmax(190px, .8fr) minmax(190px, 1fr);
   gap: 18px;
+}
+
+.toolbar--stock { grid-template-columns: minmax(220px, 1fr) minmax(260px, 1.4fr); }
+.toolbar--divergence.toolbar--stock {
+  grid-template-columns: minmax(190px, 1fr) auto minmax(190px, .8fr) minmax(220px, 1fr);
 }
 
 .toolbar label > span, .filter-field > span {
@@ -354,6 +363,7 @@ thead .sticky-column { z-index: 3; background: #eceeea; }
   .command-group > * { flex: 1; }
   .toolbar { grid-template-columns: 1fr; gap: 14px; }
   .toolbar--divergence { grid-template-columns: 1fr; }
+  .toolbar--stock, .toolbar--divergence.toolbar--stock { grid-template-columns: 1fr; }
   .segmented-control button { flex: 1; }
   .login-shell { grid-template-columns: 1fr; }
   .login-brand { min-height: 36vh; padding: 38px 24px; }

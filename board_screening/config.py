@@ -22,6 +22,8 @@ class Settings:
     database_path: Path
     output_file: Path
     divergence_output_file: Path | None = None
+    stock_output_file: Path | None = None
+    stock_divergence_output_file: Path | None = None
     cookie_secure: bool = False
     enable_scheduler: bool = True
 
@@ -43,6 +45,15 @@ class Settings:
                 os.getenv(
                     "DIVERGENCE_OUTPUT_FILE",
                     "data/ths_board_macd_divergence_result.csv",
+                )
+            ),
+            stock_output_file=Path(
+                os.getenv("STOCK_OUTPUT_FILE", "data/ths_stock_screen_result.csv")
+            ),
+            stock_divergence_output_file=Path(
+                os.getenv(
+                    "STOCK_DIVERGENCE_OUTPUT_FILE",
+                    "data/ths_stock_macd_divergence_result.csv",
                 )
             ),
             cookie_secure=_env_bool("COOKIE_SECURE", False),
