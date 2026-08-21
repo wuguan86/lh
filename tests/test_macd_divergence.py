@@ -76,6 +76,15 @@ def test_pair_rejects_second_low_with_a_lower_interim_low() -> None:
     assert divergence.build_divergence_edges(calculated, pivots) == []
 
 
+@pytest.mark.parametrize("second_dif", [0.0, 1.0])
+def test_pair_requires_both_dif_lows_below_zero(second_dif: float) -> None:
+    calculated = build_calculated_frame([(50, 100.0, -2.0), (97, 99.0, second_dif)])
+    pivots = divergence.find_divergence_pivots(calculated)
+
+    # 第二个 DIF 低点到达或越过零轴时，已经不属于零轴下方的底背离结构。
+    assert divergence.build_divergence_edges(calculated, pivots) == []
+
+
 def test_multiple_divergence_builds_two_edge_chain() -> None:
     calculated = build_calculated_frame(
         [(40, 100.0, -3.0), (68, 99.0, -2.0), (97, 98.0, -1.0)]

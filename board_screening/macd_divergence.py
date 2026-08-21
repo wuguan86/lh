@@ -139,7 +139,13 @@ def build_divergence_edges(
                 continue
             if gap > MAX_PIVOT_GAP:
                 break
-            if first_pivot.dif >= 0 or second_pivot.dif <= first_pivot.dif:
+            # 底背离的两个 DIF 低点必须都在零轴下方；第二点越过零轴属于趋势修复，
+            # 不能再用相对第一点的涨幅判定为底背离。
+            if (
+                first_pivot.dif >= 0
+                or second_pivot.dif >= 0
+                or second_pivot.dif <= first_pivot.dif
+            ):
                 continue
             if second_pivot.price > first_pivot.price * (1 - MIN_PRICE_DROP_RATE):
                 continue
