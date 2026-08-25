@@ -71,9 +71,9 @@ def get_all_boards(warnings: list[str] | None = None) -> list[BoardInfo]:
     ]
 
 
-def get_date_range(calendar_days: int = 220) -> tuple[str, str]:
+def get_date_range(calendar_days: int = 220, end_date: date | None = None) -> tuple[str, str]:
     """按自然日生成行情请求区间。"""
-    end_day = date.today()
+    end_day = end_date or date.today()
     start_day = end_day - timedelta(days=calendar_days)
     return start_day.strftime("%Y%m%d"), end_day.strftime("%Y%m%d")
 

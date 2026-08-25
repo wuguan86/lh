@@ -40,6 +40,10 @@ class RunCoordinator:
             tuple[str, str], Callable[[Iterable[dict[str, object]]], None]
         ]
         | None = None,
+        historical_mode_screeners: Mapping[
+            tuple[str, str], Callable[[str], ScreeningOutput]
+        ]
+        | None = None,
     ) -> None:
         self.repository = repository
         self.screening_callable = screening_callable
@@ -55,6 +59,7 @@ class RunCoordinator:
             for strategy, callable_ in (strategy_csv_writers or {}).items()
         }
         self.mode_csv_writers.update(mode_csv_writers or {})
+        self.historical_mode_screeners = dict(historical_mode_screeners or {})
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="board-screening")
         self._state_lock = threading.Lock()
         self._idle_condition = threading.Condition(self._state_lock)
@@ -85,6 +90,7 @@ class RunCoordinator:
         trigger_type: str,
         strategy: str = STRATEGY_EQUAL_DECLINE,
         universe: str = UNIVERSE_BOARD,
+        target_trade_date: str | None = None,
     ) -> int:
         validate_run_mode(strategy, universe)
         with self._idle_condition:
@@ -107,7 +113,13 @@ class RunCoordinator:
                 self._active_strategy = strategy
                 self._active_universe = universe
                 self._is_submitting = False
-            self._future = self._executor.submit(self._execute, run_id, strategy, universe)
+            self._future = self._executor.submit(
+                self._execute,
+                run_id,
+                strategy,
+                universe,
+                target_trade_date,
+            )
             return run_id
         except Exception as exc:
             if run_id is not None:
@@ -124,14 +136,29 @@ class RunCoordinator:
                 callback()
             raise
 
-    def _execute(self, run_id: int, strategy: str, universe: str) -> None:
+    def _execute(
+        self,
+        run_id: int,
+        strategy: str,
+        universe: str,
+        target_trade_date: str | None,
+    ) -> None:
         try:
             self.repository.mark_running(run_id)
-            screening_callable = self.mode_screeners.get(
-                (universe, strategy),
-                self.screening_callable,
-            )
-            output = screening_callable()
+            mode = (universe, strategy)
+            if target_trade_date:
+                historical_screener = self.historical_mode_screeners.get(mode)
+                if historical_screener is None:
+                    raise ValueError("当前筛选模式不支持按历史日期执行")
+                logging.info(
+                    "筛选任务 %s 按历史交易日 %s 执行。",
+                    run_id,
+                    target_trade_date,
+                )
+                output = historical_screener(target_trade_date)
+            else:
+                screening_callable = self.mode_screeners.get(mode, self.screening_callable)
+                output = screening_callable()
             self.repository.save_results(run_id, output.records)
             csv_writer = self.mode_csv_writers.get((universe, strategy), self.csv_writer)
             csv_writer(output.records)

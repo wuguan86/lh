@@ -12,6 +12,7 @@ import logging
 import math
 import os
 import time
+from datetime import datetime
 
 import akshare as ak
 import numpy as np
@@ -303,7 +304,14 @@ def run_screening(
     )
     if not math.isfinite(configured_min_wave_rise_rate) or configured_min_wave_rise_rate < 0:
         raise ValueError("最小上涨幅度必须是非负数")
-    start_date, end_date = get_date_range()
+    target_day = (
+        datetime.strptime(required_trade_date, "%Y-%m-%d").date()
+        if required_trade_date
+        else None
+    )
+    start_date, end_date = (
+        get_date_range(end_date=target_day) if target_day else get_date_range()
+    )
     warning_messages: list[str] = []
     boards = get_all_boards(warning_messages)
     if not boards:
@@ -340,6 +348,11 @@ def run_screening(
                 if cached_result.frame is None:
                     continue
                 kline_df = cached_result.frame
+            if required_trade_date:
+                # 历史重跑必须截断目标日之后的行情，避免未来数据影响筛选结论。
+                kline_df = kline_df[
+                    kline_df["date"] <= pd.Timestamp(required_trade_date)
+                ].reset_index(drop=True)
             if not kline_df.empty:
                 latest_trade_dates.append(kline_df.iloc[-1]["date"].strftime("%Y-%m-%d"))
                 processed_board_count += 1

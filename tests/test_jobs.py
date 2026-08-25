@@ -94,6 +94,37 @@ def test_coordinator_rejects_overlapping_run(tmp_path) -> None:
     coordinator.shutdown()
 
 
+def test_coordinator_passes_historical_date_to_selected_board_screener(tmp_path) -> None:
+    repository = RunRepository(tmp_path / "screening.db")
+    repository.initialize()
+    received_dates: list[str] = []
+
+    def historical_screening(target_trade_date: str) -> ScreeningOutput:
+        received_dates.append(target_trade_date)
+        return ScreeningOutput(records=(), warnings=(), latest_trade_date=target_trade_date)
+
+    coordinator = RunCoordinator(
+        repository,
+        lambda: ScreeningOutput(records=(), warnings=(), latest_trade_date="2026-08-25"),
+        lambda _: None,
+        historical_mode_screeners={
+            (UNIVERSE_BOARD, STRATEGY_EQUAL_DECLINE): historical_screening,
+        },
+    )
+
+    run_id = coordinator.submit(
+        "manual",
+        STRATEGY_EQUAL_DECLINE,
+        UNIVERSE_BOARD,
+        "2026-07-24",
+    )
+    coordinator.wait_for_idle(timeout=2)
+
+    assert received_dates == ["2026-07-24"]
+    assert repository.get_run(run_id)["latest_trade_date"] == "2026-07-24"
+    coordinator.shutdown()
+
+
 def test_scheduled_service_skips_processed_trade_date(tmp_path) -> None:
     repository = RunRepository(tmp_path / "screening.db")
     repository.initialize()

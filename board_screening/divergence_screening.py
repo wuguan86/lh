@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import date
+from datetime import date, datetime
 from typing import Callable
 
 import akshare as ak
@@ -20,7 +20,7 @@ from board_screening.market_data import (
     get_all_boards,
 )
 from board_screening.models import ScreeningOutput
-from board_screening.scheduler import fetch_latest_trade_date
+from board_screening.scheduler import resolve_screening_trade_date
 
 
 HISTORY_YEARS = 12
@@ -38,6 +38,7 @@ def run_divergence_screening(
     enricher: DataEnricher | None = None,
     board_provider: Callable[[list[str] | None], list[BoardInfo]] = get_all_boards,
     calendar_fetcher: Callable[[], pd.DataFrame] = ak.tool_trade_date_hist_sina,
+    target_trade_date: str | None = None,
 ) -> ScreeningOutput:
     """遍历行业和概念板块并输出日、周、月三个周期的底背离结果。"""
     warning_messages: list[str] = []
@@ -45,8 +46,10 @@ def run_divergence_screening(
     if not boards:
         raise RuntimeError("未获取到任何同花顺板块")
     trade_calendar = calendar_fetcher()
-    latest_trade_date = fetch_latest_trade_date(lambda: trade_calendar)
-    start_date, end_date = get_divergence_date_range()
+    latest_trade_date = resolve_screening_trade_date(trade_calendar, target_trade_date)
+    start_date, end_date = get_divergence_date_range(
+        datetime.strptime(latest_trade_date, "%Y-%m-%d").date()
+    )
     logging.info(
         "开始执行 MACD 底背离筛选，共 %s 个板块，请求区间 %s 至 %s。",
         len(boards),

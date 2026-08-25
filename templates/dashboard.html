@@ -66,6 +66,17 @@
         <h1>{{ heading_text }}</h1>
       </div>
       <div class="command-group">
+        {% if not is_stock %}
+          <div class="historical-run-control">
+            <label for="historical-trade-date">历史日期</label>
+            <input id="historical-trade-date" type="date" max="{{ max_historical_date }}">
+            <button class="secondary-button" id="run-historical" type="button"
+                    {% if is_selected_mode_active %}disabled{% endif %}>
+              <span aria-hidden="true">▶</span>
+              <span class="run-label">按日期执行</span>
+            </button>
+          </div>
+        {% endif %}
         {% if selected_run and selected_run['status'] in ['succeeded', 'succeeded_with_warnings'] %}
           <a class="secondary-button" href="/api/runs/{{ selected_run['id'] }}/csv" id="download-csv">
             <span aria-hidden="true">↓</span> 下载 CSV

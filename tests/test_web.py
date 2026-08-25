@@ -25,18 +25,21 @@ class FakeCoordinator:
         self.active_universe = active_universe
         self.submitted_strategy = None
         self.submitted_universe = None
+        self.submitted_target_trade_date = None
 
     def submit(
         self,
         trigger_type: str,
         strategy: str = "equal_decline",
         universe: str = "board",
+        target_trade_date: str | None = None,
     ) -> int:
         if self.reject:
             raise RunAlreadyActive("已有筛选任务正在执行")
         assert trigger_type == "manual"
         self.submitted_strategy = strategy
         self.submitted_universe = universe
+        self.submitted_target_trade_date = target_trade_date
         return 42
 
     def shutdown(self) -> None:
@@ -146,6 +149,64 @@ def test_manual_run_returns_409_when_job_is_active(tmp_path) -> None:
 
     assert response.status_code == 409
     assert response.json()["detail"] == "已有筛选任务正在执行"
+
+
+def test_board_dashboard_exposes_historical_run_control(tmp_path) -> None:
+    with build_client(tmp_path) as client:
+        login(client)
+        board_response = client.get("/?strategy=equal_decline&universe=board")
+        stock_response = client.get("/?strategy=equal_decline&universe=stock")
+
+    assert 'id="historical-trade-date"' in board_response.text
+    assert 'id="run-historical"' in board_response.text
+    assert "按日期执行" in board_response.text
+    assert 'id="historical-trade-date"' not in stock_response.text
+
+
+def test_manual_board_run_accepts_historical_trade_date(tmp_path) -> None:
+    coordinator = FakeCoordinator()
+    with build_client(tmp_path, coordinator) as client:
+        csrf_token = login(client)
+        response = client.post(
+            "/api/runs",
+            headers={"X-CSRF-Token": csrf_token},
+            json={
+                "strategy": "equal_decline",
+                "universe": "board",
+                "target_trade_date": "2026-07-24",
+            },
+        )
+
+    assert response.status_code == 202
+    assert coordinator.submitted_target_trade_date == "2026-07-24"
+
+
+def test_manual_historical_run_rejects_stock_and_invalid_date(tmp_path) -> None:
+    with build_client(tmp_path) as client:
+        csrf_token = login(client)
+        stock_response = client.post(
+            "/api/runs",
+            headers={"X-CSRF-Token": csrf_token},
+            json={
+                "strategy": "equal_decline",
+                "universe": "stock",
+                "target_trade_date": "2026-07-24",
+            },
+        )
+        invalid_date_response = client.post(
+            "/api/runs",
+            headers={"X-CSRF-Token": csrf_token},
+            json={
+                "strategy": "equal_decline",
+                "universe": "board",
+                "target_trade_date": "2026/07/24",
+            },
+        )
+
+    assert stock_response.status_code == 422
+    assert stock_response.json()["detail"] == "个股筛选不支持按历史日期执行"
+    assert invalid_date_response.status_code == 422
+    assert invalid_date_response.json()["detail"] == "执行日期格式必须为 YYYY-MM-DD"
 
 
 def test_csv_download_has_bom_and_adjacent_price_headers(tmp_path) -> None:

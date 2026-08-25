@@ -169,7 +169,32 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 .eyebrow { margin: 0 0 5px; color: var(--ink-soft); font-size: 12px; font-weight: 700; }
 .workspace-heading h1 { margin: 0; font-size: 28px; line-height: 1.15; }
-.command-group { display: flex; gap: 10px; }
+.command-group { display: flex; align-items: flex-end; gap: 10px; }
+
+.historical-run-control {
+  display: grid;
+  grid-template-columns: 138px auto;
+  gap: 5px 8px;
+}
+
+.historical-run-control label {
+  grid-column: 1 / -1;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.historical-run-control input {
+  width: 138px;
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0 10px;
+}
+
+.historical-run-control .secondary-button { white-space: nowrap; }
 
 .run-alert {
   display: grid;
@@ -203,7 +228,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .primary-button:hover:not(:disabled) { border-color: var(--accent-hover); background: var(--accent-hover); }
 .primary-button:disabled { cursor: wait; opacity: .7; animation: status-pulse 1.4s ease-in-out infinite; }
 .secondary-button { border: 1px solid var(--line); background: var(--surface); }
-.secondary-button:hover { border-color: #aeb3ae; background: #f9faf8; }
+.secondary-button:hover:not(:disabled) { border-color: #aeb3ae; background: #f9faf8; }
+.secondary-button:disabled { cursor: wait; opacity: .7; }
 .secondary-button.is-disabled { color: #a1a6a2; cursor: not-allowed; }
 
 @keyframes status-pulse { 50% { opacity: .48; } }
@@ -377,7 +403,10 @@ thead .sticky-column { z-index: 3; background: #eceeea; }
   .workspace-heading { align-items: flex-start; flex-direction: column; }
   .run-alert { grid-template-columns: 1fr; gap: 3px; }
   .command-group { width: 100%; }
-  .command-group > * { flex: 1; }
+  .command-group { flex-wrap: wrap; }
+  .command-group > :not(.historical-run-control) { flex: 1; }
+  .historical-run-control { width: 100%; grid-template-columns: minmax(0, 1fr) auto; }
+  .historical-run-control input { width: 100%; }
   .toolbar { grid-template-columns: 1fr; gap: 14px; }
   .toolbar--divergence { grid-template-columns: 1fr; }
   .toolbar--stock, .toolbar--divergence.toolbar--stock { grid-template-columns: 1fr; }

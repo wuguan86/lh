@@ -6,6 +6,7 @@ import hmac
 import logging
 import secrets
 from contextlib import asynccontextmanager
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,7 @@ from board_screening.stock_screening import (
 from board_screening.scheduler import (
     build_scheduler,
     fetch_latest_trade_date,
+    fetch_screening_trade_date,
     submit_startup_catchup,
 )
 from board_screening.storage import RunRepository
@@ -76,6 +78,21 @@ def _create_default_coordinator(settings: Settings, repository: RunRepository) -
 
     def execute_macd_divergence():
         return run_divergence_screening(kline_provider)
+
+    def execute_historical_equal_decline(target_trade_date: str):
+        from board_pattern_screener import run_screening
+
+        resolved_trade_date = fetch_screening_trade_date(target_trade_date)
+        return run_screening(
+            kline_provider=kline_provider,
+            required_trade_date=resolved_trade_date,
+        )
+
+    def execute_historical_macd_divergence(target_trade_date: str):
+        return run_divergence_screening(
+            kline_provider,
+            target_trade_date=target_trade_date,
+        )
 
     def execute_stock_equal_decline():
         return run_stock_equal_decline_screening(
@@ -134,6 +151,10 @@ def _create_default_coordinator(settings: Settings, repository: RunRepository) -
                 STRATEGY_MACD_DIVERGENCE,
                 UNIVERSE_STOCK,
             ),
+        },
+        historical_mode_screeners={
+            (UNIVERSE_BOARD, STRATEGY_EQUAL_DECLINE): execute_historical_equal_decline,
+            (UNIVERSE_BOARD, STRATEGY_MACD_DIVERGENCE): execute_historical_macd_divergence,
         },
     )
 
@@ -336,6 +357,7 @@ def create_app(
                 "is_stock": selected_universe == UNIVERSE_STOCK,
                 "heading_text": heading_text,
                 "failure_message": failure_message,
+                "max_historical_date": date.today().isoformat(),
                 "csrf_token": request.session["csrf_token"],
                 "status_labels": RUN_STATUS_LABELS,
             },
@@ -350,12 +372,29 @@ def create_app(
         _validate_csrf(request)
         strategy = (payload or {}).get("strategy", STRATEGY_EQUAL_DECLINE)
         universe = (payload or {}).get("universe", UNIVERSE_BOARD)
+        target_trade_date = (payload or {}).get("target_trade_date") or None
         try:
             validate_run_mode(strategy, universe)
+            if target_trade_date:
+                if universe != UNIVERSE_BOARD:
+                    raise ValueError("个股筛选不支持按历史日期执行")
+                try:
+                    parsed_trade_date = datetime.strptime(target_trade_date, "%Y-%m-%d").date()
+                except ValueError as exc:
+                    raise ValueError("执行日期格式必须为 YYYY-MM-DD") from exc
+                if parsed_trade_date > date.today():
+                    raise ValueError("执行日期不能晚于今天")
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         try:
-            if strategy == STRATEGY_EQUAL_DECLINE and universe == UNIVERSE_BOARD:
+            if target_trade_date:
+                run_id = app_coordinator.submit(
+                    "manual",
+                    strategy,
+                    universe,
+                    target_trade_date,
+                )
+            elif strategy == STRATEGY_EQUAL_DECLINE and universe == UNIVERSE_BOARD:
                 run_id = app_coordinator.submit("manual")
             elif universe == UNIVERSE_BOARD:
                 run_id = app_coordinator.submit("manual", strategy)

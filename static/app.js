@@ -1,5 +1,7 @@
 const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
 const runButton = document.querySelector('#run-now');
+const historicalRunButton = document.querySelector('#run-historical');
+const historicalTradeDateInput = document.querySelector('#historical-trade-date');
 const toast = document.querySelector('#toast');
 const selectedStrategy = runButton?.dataset.strategy || 'equal_decline';
 const selectedUniverse = runButton?.dataset.universe || 'board';
@@ -12,10 +14,17 @@ function showToast(message) {
   window.setTimeout(() => toast.classList.remove('is-visible'), 3200);
 }
 
-async function startRun() {
+function setRunButtonsDisabled(disabled) {
+  if (runButton) runButton.disabled = disabled;
+  if (historicalRunButton) historicalRunButton.disabled = disabled;
+}
+
+async function startRun(targetTradeDate = '') {
   if (!runButton) return;
-  runButton.disabled = true;
-  runButton.querySelector('.run-label').textContent = '提交中';
+  const activeButton = targetTradeDate ? historicalRunButton : runButton;
+  const activeButtonLabel = activeButton?.querySelector('.run-label');
+  setRunButtonsDisabled(true);
+  if (activeButtonLabel) activeButtonLabel.textContent = '提交中';
   try {
     const response = await fetch('/api/runs', {
       method: 'POST',
@@ -23,18 +32,36 @@ async function startRun() {
         'Content-Type': 'application/json',
         'X-CSRF-Token': csrfToken,
       },
-      body: JSON.stringify({ strategy: selectedStrategy, universe: selectedUniverse }),
+      body: JSON.stringify({
+        strategy: selectedStrategy,
+        universe: selectedUniverse,
+        ...(targetTradeDate ? { target_trade_date: targetTradeDate } : {}),
+      }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || '任务提交失败');
-    runButton.querySelector('.run-label').textContent = '执行中';
-    showToast('筛选任务已提交');
+    if (activeButtonLabel) activeButtonLabel.textContent = '执行中';
+    showToast(targetTradeDate ? `已提交 ${targetTradeDate} 的板块筛选` : '筛选任务已提交');
     pollRun(payload.run_id);
   } catch (error) {
-    runButton.disabled = false;
-    runButton.querySelector('.run-label').textContent = '立即执行';
+    setRunButtonsDisabled(false);
+    if (activeButtonLabel) {
+      activeButtonLabel.textContent = targetTradeDate
+        ? '按日期执行'
+        : '立即执行';
+    }
     showToast(error.message);
   }
+}
+
+function startHistoricalRun() {
+  const targetTradeDate = historicalTradeDateInput?.value || '';
+  if (!targetTradeDate) {
+    showToast('请先选择历史交易日期');
+    historicalTradeDateInput?.focus();
+    return;
+  }
+  startRun(targetTradeDate);
 }
 
 function pollRun(runId) {
@@ -57,7 +84,8 @@ if (runButton?.dataset.activeRunId) {
   pollRun(Number(runButton.dataset.activeRunId));
 }
 
-runButton?.addEventListener('click', startRun);
+runButton?.addEventListener('click', () => startRun());
+historicalRunButton?.addEventListener('click', startHistoricalRun);
 
 document.querySelector('#run-history')?.addEventListener('change', (event) => {
   if (event.target.value) {

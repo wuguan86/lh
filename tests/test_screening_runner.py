@@ -4,6 +4,7 @@ import pandas as pd
 
 import board_pattern_screener as screener
 from board_screening.enrichment import EnrichmentOutcome
+from board_screening.market_data import CachedKlineResult
 
 
 class FakeEnricher:
@@ -46,6 +47,43 @@ def test_run_screening_returns_enriched_records_and_latest_trade_date(monkeypatc
     assert output.latest_trade_date == "2026-07-24"
     assert output.records[0]["关联ETF代码"] == "159994"
     assert output.warnings == ("股票数据暂缺",)
+
+
+def test_historical_run_truncates_cached_kline_at_target_date(monkeypatch) -> None:
+    board = screener.BoardInfo("概念", "5G")
+    full_frame = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2026-07-23", "2026-07-24", "2026-07-27"]),
+            "high": [100.0, 99.0, 98.0],
+            "low": [90.0, 89.0, 88.0],
+            "close": [95.0, 94.0, 93.0],
+        }
+    )
+    analyzed_dates: list[str] = []
+    requested_ranges: list[tuple[str, str, str]] = []
+
+    class FakeKlineProvider:
+        def load(self, _board, start_date, end_date, required_trade_date):
+            requested_ranges.append((start_date, end_date, required_trade_date))
+            return CachedKlineResult(full_frame, ())
+
+    def analyze(_board, frame, _min_wave_rise_rate):
+        analyzed_dates.extend(frame["date"].dt.strftime("%Y-%m-%d"))
+        return None
+
+    monkeypatch.setattr(screener, "get_all_boards", lambda *_: [board])
+    monkeypatch.setattr(screener, "analyze_board_pattern", analyze)
+    monkeypatch.setattr(screener.time, "sleep", lambda *_: None)
+
+    output = screener.run_screening(
+        enricher=FakeEnricher(),
+        kline_provider=FakeKlineProvider(),
+        required_trade_date="2026-07-24",
+    )
+
+    assert requested_ranges[0][1:] == ("20260724", "2026-07-24")
+    assert analyzed_dates == ["2026-07-23", "2026-07-24"]
+    assert output.latest_trade_date == "2026-07-24"
 
 
 def test_get_all_boards_reports_single_source_failure(monkeypatch) -> None:

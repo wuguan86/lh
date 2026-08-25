@@ -4,11 +4,13 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import pytest
 
 from board_screening.scheduler import (
     build_scheduler,
     fetch_latest_trade_date,
     latest_trade_date_from_calendar,
+    resolve_screening_trade_date,
     submit_startup_catchup,
 )
 
@@ -39,6 +41,17 @@ def test_latest_trade_date_uses_previous_closed_day_before_1800() -> None:
 
     assert fetch_latest_trade_date(lambda: calendar_df, morning) == "2026-07-24"
     assert fetch_latest_trade_date(lambda: calendar_df, evening) == "2026-07-27"
+
+
+def test_requested_screening_date_must_be_closed_trade_date() -> None:
+    calendar_df = pd.DataFrame(
+        {"trade_date": pd.to_datetime(["2026-07-24", "2026-07-27"])}
+    )
+    evening = datetime(2026, 7, 27, 18, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    assert resolve_screening_trade_date(calendar_df, "2026-07-24", evening) == "2026-07-24"
+    with pytest.raises(ValueError, match="不是交易日"):
+        resolve_screening_trade_date(calendar_df, "2026-07-25", evening)
 
 
 def test_scheduler_registers_daily_job_at_shanghai_1800() -> None:
